@@ -66,6 +66,7 @@ var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, 
 const (
 	exampleAPIKeyManagementPath = "/management.html"
 	exampleAPIKeyManagementURL  = "/management.html?safe-mode=configure"
+	defaultHTTPServerTimeout    = 600 * time.Second
 )
 
 type serverOptionConfig struct {
@@ -399,8 +400,11 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create HTTP server
 	s.server = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Handler: engine,
+		Addr:         fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Handler:      engine,
+		ReadTimeout:  defaultHTTPServerTimeout,
+		WriteTimeout: defaultHTTPServerTimeout,
+		IdleTimeout:  defaultHTTPServerTimeout,
 	}
 
 	return s
