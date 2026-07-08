@@ -557,6 +557,129 @@ func TestManagerExecuteStream_AntigravityInvalidGrantFallsBackAndSuspendsAuth(t 
 	}
 }
 
+func TestManager_MarkResult_CredentialErrorsCooldownWholeAuth(t *testing.T) {
+	prev := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(prev) })
+
+	cases := []struct {
+		name   string
+		err    *Error
+		reason string
+	}{
+		{
+			name: "invalid-grant",
+			err: &Error{
+				Code:       "invalid_grant",
+				Message:    "invalid_grant",
+				HTTPStatus: http.StatusBadRequest,
+			},
+			reason: "invalid_grant",
+		},
+		{
+			name: "expired-or-revoked",
+			err: &Error{
+				Message:    "Token has been expired or revoked",
+				HTTPStatus: http.StatusBadRequest,
+			},
+			reason: "invalid_grant",
+		},
+		{
+			name: "tos-violation",
+			err: &Error{
+				Code:       "TOS_VIOLATION",
+				Message:    "TOS_VIOLATION",
+				HTTPStatus: http.StatusForbidden,
+			},
+			reason: "tos_violation",
+		},
+		{
+			name: "unauthorized",
+			err: &Error{
+				Message:    "unauthorized",
+				HTTPStatus: http.StatusUnauthorized,
+			},
+			reason: "unauthorized",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(nil, nil, nil)
+			auth := &Auth{ID: "auth-" + tc.name, Provider: "antigravity"}
+			if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+				t.Fatalf("register auth: %v", errRegister)
+			}
+
+			model := "gemini-3-pro-preview"
+			m.MarkResult(context.Background(), Result{
+				AuthID:   auth.ID,
+				Provider: auth.Provider,
+				Model:    model,
+				Success:  false,
+				Error:    tc.err,
+			})
+
+			updated, ok := m.GetByID(auth.ID)
+			if !ok || updated == nil {
+				t.Fatalf("expected auth to be present")
+			}
+			if !updated.Unavailable {
+				t.Fatalf("expected auth to be unavailable")
+			}
+			if updated.StatusMessage != tc.reason {
+				t.Fatalf("status message = %q, want %q", updated.StatusMessage, tc.reason)
+			}
+			diff := time.Until(updated.NextRetryAfter)
+			if diff < 23*time.Hour+55*time.Minute || diff > 24*time.Hour+time.Minute {
+				t.Fatalf("expected auth cooldown to be ~24 hours, got %v", diff)
+			}
+
+			state := updated.ModelStates[model]
+			if state == nil {
+				t.Fatalf("expected model state for %q", model)
+			}
+			if !state.NextRetryAfter.Equal(updated.NextRetryAfter) {
+				t.Fatalf("model cooldown = %v, want auth cooldown %v", state.NextRetryAfter, updated.NextRetryAfter)
+			}
+
+			blocked, _, _ := isAuthBlockedForModel(updated, "gemini-other-model", time.Now())
+			if !blocked {
+				t.Fatalf("expected credential cooldown to block other models too")
+			}
+		})
+	}
+}
+
+func TestManager_MarkResult_ModelCooldownDoesNotBlockOtherModels(t *testing.T) {
+	prev := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(prev) })
+
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "auth-model-only-cooldown", Provider: "antigravity"}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	m.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    "missing-model",
+		Success:  false,
+		Error:    &Error{HTTPStatus: http.StatusNotFound, Message: "model not found"},
+	})
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth to be present")
+	}
+	blocked, _, _ := isAuthBlockedForModel(updated, "other-model", time.Now())
+	if blocked {
+		t.Fatalf("expected ordinary model cooldown not to block other models")
+	}
+}
+
 func TestManagerExecuteStream_ModelSupportBadRequestFallsBackAndSuspendsAuth(t *testing.T) {
 	m := NewManager(nil, nil, nil)
 	executor := &authFallbackExecutor{
@@ -718,6 +841,67 @@ func TestManager_MarkResult_TransientErrorCooldownDefault(t *testing.T) {
 	if diff < 55*time.Second || diff > 65*time.Second {
 		t.Fatalf("expected transient error cooldown to be ~60 seconds, got %v", diff)
 	}
+}
+
+func TestManager_MarkResult_ServerErrorCooldownDefault(t *testing.T) {
+	prevQuota := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	prevTransient := transientErrorCooldownSeconds.Load()
+	SetTransientErrorCooldownSeconds(0)
+	t.Cleanup(func() {
+		quotaCooldownDisabled.Store(prevQuota)
+		transientErrorCooldownSeconds.Store(prevTransient)
+	})
+
+	t.Run("model 500", func(t *testing.T) {
+		m := NewManager(nil, nil, nil)
+		auth := &Auth{ID: "auth-server-error-model", Provider: "claude"}
+		if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register auth: %v", errRegister)
+		}
+
+		model := "test-model-server-error"
+		m.MarkResult(context.Background(), Result{
+			AuthID:   auth.ID,
+			Provider: auth.Provider,
+			Model:    model,
+			Success:  false,
+			Error:    &Error{HTTPStatus: http.StatusInternalServerError, Message: "internal error"},
+		})
+
+		updated, ok := m.GetByID(auth.ID)
+		if !ok || updated == nil || updated.ModelStates[model] == nil {
+			t.Fatalf("expected model cooldown state")
+		}
+		diff := time.Until(updated.ModelStates[model].NextRetryAfter)
+		if diff < 25*time.Second || diff > 35*time.Second {
+			t.Fatalf("expected 500 cooldown to be ~30 seconds, got %v", diff)
+		}
+	})
+
+	t.Run("auth 503", func(t *testing.T) {
+		m := NewManager(nil, nil, nil)
+		auth := &Auth{ID: "auth-server-error-auth", Provider: "claude"}
+		if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register auth: %v", errRegister)
+		}
+
+		m.MarkResult(context.Background(), Result{
+			AuthID:   auth.ID,
+			Provider: auth.Provider,
+			Success:  false,
+			Error:    &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "unavailable"},
+		})
+
+		updated, ok := m.GetByID(auth.ID)
+		if !ok || updated == nil {
+			t.Fatalf("expected auth to be present")
+		}
+		diff := time.Until(updated.NextRetryAfter)
+		if diff < 4*time.Second || diff > 6*time.Second {
+			t.Fatalf("expected 503 cooldown to be ~5 seconds, got %v", diff)
+		}
+	})
 }
 
 func TestManager_MarkResult_TransientErrorCooldownDisabled(t *testing.T) {

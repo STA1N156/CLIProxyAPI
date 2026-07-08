@@ -83,10 +83,14 @@ const (
 	// success but the auth still evaluates as needing refresh (e.g. token expiry
 	// wasn't updated). Without this guard, the auto-refresh loop can tight-loop and
 	// burn CPU at idle.
-	refreshIneffectiveBackoff = 30 * time.Second
-	quotaBackoffBase          = time.Second
-	quotaBackoffMax           = 30 * time.Minute
-	transientErrorCooldown    = time.Minute
+	refreshIneffectiveBackoff  = 30 * time.Second
+	quotaBackoffBase           = time.Second
+	quotaBackoffMax            = 30 * time.Minute
+	quotaDefaultCooldown       = 5 * time.Second
+	transientErrorCooldown     = time.Minute
+	serverErrorCooldown        = 30 * time.Second
+	serviceUnavailableCooldown = 5 * time.Second
+	accountCredentialCooldown  = 24 * time.Hour
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -97,8 +101,8 @@ func SetQuotaCooldownDisabled(disable bool) {
 	quotaCooldownDisabled.Store(disable)
 }
 
-// SetTransientErrorCooldownSeconds configures cooldowns for 408/500/502/503/504.
-// 0 keeps the legacy default; negative values disable transient error cooldowns.
+// SetTransientErrorCooldownSeconds configures cooldowns for transient upstream errors.
+// 0 uses built-in defaults; negative values disable transient error cooldowns.
 func SetTransientErrorCooldownSeconds(seconds int) {
 	transientErrorCooldownSeconds.Store(int64(seconds))
 }
@@ -157,6 +161,22 @@ func nextTransientErrorRetryAfter(now time.Time) time.Time {
 	return now.Add(time.Duration(seconds) * time.Second)
 }
 
+func nextServerErrorRetryAfter(now time.Time) time.Time {
+	seconds := transientErrorCooldownSeconds.Load()
+	if seconds != 0 {
+		return nextTransientErrorRetryAfter(now)
+	}
+	return now.Add(serverErrorCooldown)
+}
+
+func nextServiceUnavailableRetryAfter(now time.Time) time.Time {
+	seconds := transientErrorCooldownSeconds.Load()
+	if seconds != 0 {
+		return nextTransientErrorRetryAfter(now)
+	}
+	return now.Add(serviceUnavailableCooldown)
+}
+
 // Result captures execution outcome used to adjust auth state.
 type Result struct {
 	// AuthID references the auth that produced this result.
@@ -167,7 +187,7 @@ type Result struct {
 	Model string
 	// Success marks whether the execution succeeded.
 	Success bool
-	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
+	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay/quotaResetDelay).
 	RetryAfter *time.Duration
 	// Error describes the failure when Success is false.
 	Error *Error
@@ -3646,6 +3666,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			if result.Model != "" {
 				if !isRequestScopedNotFoundResultError(result.Error) {
 					disableCooling := m.cooldownDisabledForAuth(auth)
+					accountCredentialCooldownApplied := false
 					state := ensureModelState(auth, result.Model)
 					state.Unavailable = true
 					state.Status = StatusError
@@ -3676,25 +3697,18 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							NextRecoverAt: next,
 							BackoffLevel:  backoffLevel,
 						}
-					} else if isInvalidGrantResultError(result.Error) {
+					} else if isAccountCredentialCooldownResultError(result.Error) {
+						applyAccountCredentialCooldown(auth, result.Error, now, disableCooling)
+						accountCredentialCooldownApplied = true
 						if disableCooling {
 							state.NextRetryAfter = time.Time{}
 						} else {
-							state.NextRetryAfter = now.Add(30 * time.Minute)
-							suspendReason = "invalid_grant"
+							state.NextRetryAfter = auth.NextRetryAfter
+							suspendReason = accountCredentialCooldownReason(result.Error)
 							shouldSuspendModel = true
 						}
 					} else {
 						switch statusCode {
-						case 401:
-							if disableCooling {
-								state.NextRetryAfter = time.Time{}
-							} else {
-								next := now.Add(30 * time.Minute)
-								state.NextRetryAfter = next
-								suspendReason = "unauthorized"
-								shouldSuspendModel = true
-							}
 						case 402, 403:
 							if disableCooling {
 								state.NextRetryAfter = time.Time{}
@@ -3735,7 +3749,19 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								shouldSuspendModel = true
 								setModelQuota = true
 							}
-						case 408, 500, 502, 503, 504:
+						case 500:
+							if disableCooling {
+								state.NextRetryAfter = time.Time{}
+							} else {
+								state.NextRetryAfter = nextServerErrorRetryAfter(now)
+							}
+						case 503:
+							if disableCooling {
+								state.NextRetryAfter = time.Time{}
+							} else {
+								state.NextRetryAfter = nextServiceUnavailableRetryAfter(now)
+							}
+						case 408, 502, 504:
 							if disableCooling {
 								state.NextRetryAfter = time.Time{}
 							} else {
@@ -3748,7 +3774,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 					auth.Status = StatusError
 					auth.UpdatedAt = now
-					updateAggregatedAvailability(auth, now)
+					if !accountCredentialCooldownApplied {
+						updateAggregatedAvailability(auth, now)
+					}
 				}
 			} else {
 				disableCooling := m.cooldownDisabledForAuth(auth)
@@ -3987,8 +4015,17 @@ func isUnauthorizedError(err error) bool {
 	if statusCodeFromError(err) == http.StatusUnauthorized {
 		return true
 	}
-	raw := strings.ToLower(err.Error())
-	return strings.Contains(raw, "status 401") || strings.Contains(raw, "401 unauthorized")
+	return isUnauthorizedErrorMessage(err.Error())
+}
+
+func isUnauthorizedErrorMessage(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	return lower == "unauthorized" ||
+		lower == "401" ||
+		strings.Contains(lower, "status 401") ||
+		strings.Contains(lower, "status code 401") ||
+		strings.Contains(lower, "http 401") ||
+		strings.Contains(lower, "401 unauthorized")
 }
 
 func hasUnauthorizedAuthFailure(auth *Auth) bool {
@@ -4077,7 +4114,10 @@ func isModelSupportError(err error) bool {
 }
 
 func isInvalidGrantErrorMessage(message string) bool {
-	return strings.Contains(strings.ToLower(message), "invalid_grant")
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "invalid_grant") ||
+		strings.Contains(lower, "token has been expired or revoked") ||
+		strings.Contains(lower, "expired or revoked")
 }
 
 func isInvalidGrantError(err error) bool {
@@ -4091,15 +4131,72 @@ func isInvalidGrantError(err error) bool {
 	return isInvalidGrantErrorMessage(err.Error())
 }
 
-func isInvalidGrantResultError(err *Error) bool {
+func isTOSViolationErrorMessage(message string) bool {
+	return strings.Contains(strings.ToLower(message), "tos_violation")
+}
+
+func isAccountCredentialCooldownResultError(err *Error) bool {
 	if err == nil {
 		return false
 	}
-	status := statusCodeFromResult(err)
-	if status != http.StatusBadRequest && status != http.StatusUnauthorized {
+	if statusCodeFromResult(err) == http.StatusUnauthorized {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(err.Code), "unauthorized") || isUnauthorizedErrorMessage(err.Message) {
+		return true
+	}
+	return isInvalidGrantErrorMessage(err.Code) ||
+		isInvalidGrantErrorMessage(err.Message) ||
+		isTOSViolationErrorMessage(err.Code) ||
+		isTOSViolationErrorMessage(err.Message)
+}
+
+func accountCredentialCooldownReason(err *Error) string {
+	if err == nil {
+		return "credential_error"
+	}
+	if isInvalidGrantErrorMessage(err.Code) || isInvalidGrantErrorMessage(err.Message) {
+		return "invalid_grant"
+	}
+	if isTOSViolationErrorMessage(err.Code) || isTOSViolationErrorMessage(err.Message) {
+		return "tos_violation"
+	}
+	if statusCodeFromResult(err) == http.StatusUnauthorized ||
+		strings.EqualFold(strings.TrimSpace(err.Code), "unauthorized") ||
+		isUnauthorizedErrorMessage(err.Message) {
+		return "unauthorized"
+	}
+	return "credential_error"
+}
+
+func applyAccountCredentialCooldown(auth *Auth, resultErr *Error, now time.Time, disableCooling bool) {
+	if auth == nil {
+		return
+	}
+	auth.Unavailable = true
+	auth.Status = StatusError
+	auth.StatusMessage = accountCredentialCooldownReason(resultErr)
+	auth.UpdatedAt = now
+	if resultErr != nil {
+		auth.LastError = cloneError(resultErr)
+	}
+	if disableCooling {
+		auth.NextRetryAfter = time.Time{}
+		return
+	}
+	auth.NextRetryAfter = now.Add(accountCredentialCooldown)
+}
+
+func isAccountCredentialCooldownAuth(auth *Auth) bool {
+	if auth == nil {
 		return false
 	}
-	return isInvalidGrantErrorMessage(err.Code) || isInvalidGrantErrorMessage(err.Message)
+	if auth.LastError != nil && isAccountCredentialCooldownResultError(auth.LastError) {
+		return true
+	}
+	return isInvalidGrantErrorMessage(auth.StatusMessage) ||
+		isTOSViolationErrorMessage(auth.StatusMessage) ||
+		strings.EqualFold(strings.TrimSpace(auth.StatusMessage), "unauthorized")
 }
 
 func isModelSupportResultError(err *Error) bool {
@@ -4234,23 +4331,11 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.NextRetryAfter = next
 		return
 	}
-	if isInvalidGrantResultError(resultErr) {
-		auth.StatusMessage = "invalid_grant"
-		if disableCooling {
-			auth.NextRetryAfter = time.Time{}
-		} else {
-			auth.NextRetryAfter = now.Add(30 * time.Minute)
-		}
+	if isAccountCredentialCooldownResultError(resultErr) {
+		applyAccountCredentialCooldown(auth, resultErr, now, disableCooling)
 		return
 	}
 	switch statusCode {
-	case 401:
-		auth.StatusMessage = "unauthorized"
-		if disableCooling {
-			auth.NextRetryAfter = time.Time{}
-		} else {
-			auth.NextRetryAfter = now.Add(30 * time.Minute)
-		}
 	case 402, 403:
 		auth.StatusMessage = "payment_required"
 		if disableCooling {
@@ -4279,7 +4364,21 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		}
 		auth.Quota.NextRecoverAt = next
 		auth.NextRetryAfter = next
-	case 408, 500, 502, 503, 504:
+	case 500:
+		auth.StatusMessage = "transient upstream error"
+		if disableCooling {
+			auth.NextRetryAfter = time.Time{}
+		} else {
+			auth.NextRetryAfter = nextServerErrorRetryAfter(now)
+		}
+	case 503:
+		auth.StatusMessage = "transient upstream error"
+		if disableCooling {
+			auth.NextRetryAfter = time.Time{}
+		} else {
+			auth.NextRetryAfter = nextServiceUnavailableRetryAfter(now)
+		}
+	case 408, 502, 504:
 		auth.StatusMessage = "transient upstream error"
 		if disableCooling {
 			auth.NextRetryAfter = time.Time{}
@@ -4293,21 +4392,10 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	}
 }
 
-// quotaCooldownAfterFailure returns the recovery deadline and backoff level for
-// a quota failure observed at now. Failures that land while a previous quota
-// window is still open reuse that window instead of escalating, so a burst of
-// concurrent in-flight failures advances the backoff ladder at most once per
-// window.
-func quotaCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int) {
-	if quota.NextRecoverAt.After(now) {
-		return quota.NextRecoverAt, quota.BackoffLevel
-	}
-	cooldown, nextLevel := nextQuotaCooldown(quota.BackoffLevel, false)
-	var next time.Time
-	if cooldown > 0 {
-		next = now.Add(cooldown)
-	}
-	return next, nextLevel
+// quotaCooldownAfterFailure returns the fallback recovery deadline for a 429
+// without an upstream retry hint.
+func quotaCooldownAfterFailure(_ QuotaState, now time.Time) (time.Time, int) {
+	return now.Add(quotaDefaultCooldown), 0
 }
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.
