@@ -58,6 +58,8 @@ const (
 	antigravityCreditsHintRefreshTimeout   = 5 * time.Second
 	antigravityShortQuotaCooldownThreshold = 5 * time.Minute
 	antigravityInstantRetryThreshold       = 3 * time.Second
+	antigravityMaxIdleConns                = 4096
+	antigravityMaxIdleConnsPerHost         = 1024
 	// systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
 )
 
@@ -256,6 +258,8 @@ func cloneTransportWithHTTP11(base *http.Transport) *http.Transport {
 
 	clone := base.Clone()
 	clone.ForceAttemptHTTP2 = false
+	clone.MaxIdleConns = max(clone.MaxIdleConns, antigravityMaxIdleConns)
+	clone.MaxIdleConnsPerHost = max(clone.MaxIdleConnsPerHost, antigravityMaxIdleConnsPerHost)
 	// Wipe TLSNextProto to prevent implicit HTTP/2 upgrade.
 	clone.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
 	if clone.TLSClientConfig == nil {
@@ -443,7 +447,6 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 	}
 	// Content-Length is managed automatically by Go's http.Client from the Body
 	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
-	httpReq.Close = true // sends Connection: close
 
 	// Inject Authorization: Bearer <token>
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
@@ -1723,7 +1726,6 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		if errReq != nil {
 			return cliproxyexecutor.Response{}, errReq
 		}
-		httpReq.Close = true
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Authorization", "Bearer "+token)
 		httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
@@ -2297,7 +2299,6 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	if errReq != nil {
 		return nil, errReq
 	}
-	httpReq.Close = true
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))

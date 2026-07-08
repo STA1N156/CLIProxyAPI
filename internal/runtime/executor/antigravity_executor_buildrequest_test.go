@@ -175,6 +175,22 @@ func TestAntigravityBuildRequest_PreservesIndependentWebSearchRequestType(t *tes
 	}
 }
 
+func TestAntigravityBuildRequest_AllowsConnectionReuse(t *testing.T) {
+	executor := &AntigravityExecutor{}
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{"project_id": "project-1"}}
+
+	req, err := executor.buildRequest(context.Background(), auth, "token", "gemini-3.1-pro", []byte(`{"request":{}}`), false, "", "https://example.com")
+	if err != nil {
+		t.Fatalf("buildRequest error: %v", err)
+	}
+	if req.Close {
+		t.Fatal("Antigravity requests should allow HTTP keep-alive")
+	}
+	if got := req.Header.Get("Connection"); strings.EqualFold(got, "close") {
+		t.Fatalf("Connection header = %q, want keep-alive capable request", got)
+	}
+}
+
 func TestShouldResolveAntigravityWebSearchGroundingURLsRequiresTypedWebSearchAndSearchRequest(t *testing.T) {
 	original := []byte(`{"tools":[{"type":"web_search_20250305","name":"web_search"}]}`)
 	translatedWithGoogleSearch := []byte(`{"requestType":"web_search","request":{"tools":[{"googleSearch":{}}]}}`)
