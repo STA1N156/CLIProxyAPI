@@ -141,6 +141,77 @@ func TestApplyAuthFailureStateQuotaFallbackAndRetryHint(t *testing.T) {
 	}
 }
 
+func TestQuotaRetryAfterParsesGoogleQuotaResetHints(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+
+	jsonErr := &Error{
+		HTTPStatus: http.StatusTooManyRequests,
+		Message: `{
+			"error": {
+				"code": 429,
+				"message": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 48h28m30s.",
+				"status": "RESOURCE_EXHAUSTED",
+				"details": [
+					{
+						"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+						"metadata": {
+							"quotaResetDelay": "48h28m30.56899813s",
+							"quotaResetTimeStamp": "2026-07-10T10:32:17Z"
+						}
+					},
+					{
+						"@type": "type.googleapis.com/google.rpc.RetryInfo",
+						"retryDelay": "174510.568998130s"
+					}
+				]
+			}
+		}`,
+	}
+	got := quotaRetryAfterFromResult(jsonErr, nil, now)
+	if got == nil || *got != 174510568998130*time.Nanosecond {
+		t.Fatalf("quotaRetryAfterFromResult(json) = %v, want 174510.568998130s", got)
+	}
+
+	textErr := &Error{
+		HTTPStatus: http.StatusTooManyRequests,
+		Message:    "Individual quota reached. Resets in 75h35m33s.",
+	}
+	got = quotaRetryAfterFromResult(textErr, nil, now)
+	if got == nil || *got != 75*time.Hour+35*time.Minute+33*time.Second {
+		t.Fatalf("quotaRetryAfterFromResult(text) = %v, want 75h35m33s", got)
+	}
+}
+
+func TestMarkResultQuotaUsesResetsInCooldown(t *testing.T) {
+	withQuotaCooldownEnabled(t)
+
+	manager := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "auth-quota-reset-text", Provider: "antigravity"}
+	if _, errRegister := manager.Register(WithSkipPersist(context.Background()), auth); errRegister != nil {
+		t.Fatalf("Register returned error: %v", errRegister)
+	}
+
+	manager.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    "gemini-3.1-pro-low",
+		Success:  false,
+		Error: &Error{
+			HTTPStatus: http.StatusTooManyRequests,
+			Message:    "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2m3s.",
+		},
+	})
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil || updated.ModelStates["gemini-3.1-pro-low"] == nil {
+		t.Fatalf("expected model state after quota failure")
+	}
+	diff := time.Until(updated.ModelStates["gemini-3.1-pro-low"].NextRetryAfter)
+	if diff < 122*time.Second || diff > 124*time.Second {
+		t.Fatalf("expected quota reset text cooldown to be ~2m3s, got %v", diff)
+	}
+}
+
 func TestJitteredCooldownWaitBounds(t *testing.T) {
 	cases := []struct {
 		wait      time.Duration

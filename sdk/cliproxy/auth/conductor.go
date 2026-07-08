@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -88,13 +89,14 @@ const (
 	quotaBackoffMax            = 30 * time.Minute
 	quotaDefaultCooldown       = 5 * time.Second
 	transientErrorCooldown     = time.Minute
-	serverErrorCooldown        = 30 * time.Second
+	serverErrorCooldown        = 5 * time.Second
 	serviceUnavailableCooldown = 5 * time.Second
 	accountCredentialCooldown  = 24 * time.Hour
 )
 
 var quotaCooldownDisabled atomic.Bool
 var transientErrorCooldownSeconds atomic.Int64
+var quotaResetInPattern = regexp.MustCompile(`(?i)\bresets?\s+in\s+([0-9]+(?:\.[0-9]+)?(?:ns|us|ms|s|m|h)(?:[0-9]+(?:\.[0-9]+)?(?:ns|us|ms|s|m|h))*)`)
 
 // SetQuotaCooldownDisabled toggles quota cooldown scheduling globally.
 func SetQuotaCooldownDisabled(disable bool) {
@@ -3731,8 +3733,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							var next time.Time
 							backoffLevel := state.Quota.BackoffLevel
 							if !disableCooling {
-								if result.RetryAfter != nil {
-									next = now.Add(*result.RetryAfter)
+								if retryAfter := quotaRetryAfterFromResult(result.Error, result.RetryAfter, now); retryAfter != nil {
+									next = now.Add(*retryAfter)
 								} else {
 									next, backoffLevel = quotaCooldownAfterFailure(state.Quota, now)
 								}
@@ -4070,6 +4072,110 @@ func retryAfterFromError(err error) *time.Duration {
 	return &value
 }
 
+func quotaRetryAfterFromResult(err *Error, retryAfter *time.Duration, now time.Time) *time.Duration {
+	if retryAfter != nil && *retryAfter > 0 {
+		value := *retryAfter
+		return &value
+	}
+	return quotaResetDurationFromResultError(err, now)
+}
+
+func quotaResetDurationFromResultError(err *Error, now time.Time) *time.Duration {
+	if err == nil {
+		return nil
+	}
+	if duration := quotaResetDurationFromText(err.Message, now); duration != nil {
+		return duration
+	}
+	return quotaResetDurationFromText(err.Code, now)
+}
+
+func quotaResetDurationFromText(text string, now time.Time) *time.Duration {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if duration := quotaResetDurationFromJSONText(text, now); duration != nil {
+		return duration
+	}
+	match := quotaResetInPattern.FindStringSubmatch(text)
+	if len(match) < 2 {
+		return nil
+	}
+	duration, err := time.ParseDuration(match[1])
+	if err != nil || duration <= 0 {
+		return nil
+	}
+	return &duration
+}
+
+func quotaResetDurationFromJSONText(text string, now time.Time) *time.Duration {
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start < 0 || end < start {
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal([]byte(text[start:end+1]), &payload); err != nil {
+		return nil
+	}
+	return quotaResetDurationFromJSONValue(payload, now)
+}
+
+func quotaResetDurationFromJSONValue(value any, now time.Time) *time.Duration {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"retryDelay", "quotaResetDelay"} {
+			if duration := parsePositiveDurationString(typed[key]); duration != nil {
+				return duration
+			}
+		}
+		if duration := parseFutureTimestampDuration(typed["quotaResetTimeStamp"], now); duration != nil {
+			return duration
+		}
+		for _, child := range typed {
+			if duration := quotaResetDurationFromJSONValue(child, now); duration != nil {
+				return duration
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if duration := quotaResetDurationFromJSONValue(child, now); duration != nil {
+				return duration
+			}
+		}
+	}
+	return nil
+}
+
+func parsePositiveDurationString(value any) *time.Duration {
+	text, ok := value.(string)
+	if !ok {
+		return nil
+	}
+	duration, err := time.ParseDuration(strings.TrimSpace(text))
+	if err != nil || duration <= 0 {
+		return nil
+	}
+	return &duration
+}
+
+func parseFutureTimestampDuration(value any, now time.Time) *time.Duration {
+	text, ok := value.(string)
+	if !ok {
+		return nil
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(text))
+	if err != nil {
+		return nil
+	}
+	duration := timestamp.Sub(now)
+	if duration <= 0 {
+		return nil
+	}
+	return &duration
+}
+
 func statusCodeFromResult(err *Error) int {
 	if err == nil {
 		return 0
@@ -4356,8 +4462,8 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.Quota.Reason = "quota"
 		var next time.Time
 		if !disableCooling {
-			if retryAfter != nil {
-				next = now.Add(*retryAfter)
+			if effectiveRetryAfter := quotaRetryAfterFromResult(resultErr, retryAfter, now); effectiveRetryAfter != nil {
+				next = now.Add(*effectiveRetryAfter)
 			} else {
 				next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now)
 			}

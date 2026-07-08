@@ -874,8 +874,8 @@ func TestManager_MarkResult_ServerErrorCooldownDefault(t *testing.T) {
 			t.Fatalf("expected model cooldown state")
 		}
 		diff := time.Until(updated.ModelStates[model].NextRetryAfter)
-		if diff < 25*time.Second || diff > 35*time.Second {
-			t.Fatalf("expected 500 cooldown to be ~30 seconds, got %v", diff)
+		if diff < 4*time.Second || diff > 6*time.Second {
+			t.Fatalf("expected 500 cooldown to be ~5 seconds, got %v", diff)
 		}
 	})
 
