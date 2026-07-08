@@ -233,6 +233,7 @@ func (s *Service) registerModelsForAuthBatch(ctx context.Context, auths []*corea
 	if s == nil || s.coreManager == nil || len(auths) == 0 {
 		return
 	}
+	s.registerAntigravityStaticModelsForAuths(auths)
 	tasks := make([]modelRegistrationTask, 0, len(auths))
 	for _, auth := range auths {
 		if auth == nil {
@@ -248,6 +249,50 @@ func (s *Service) registerModelsForAuthBatch(ctx context.Context, auths []*corea
 		})
 	}
 	s.runModelRegistrationTasks(ctx, tasks)
+}
+
+func (s *Service) registerAntigravityStaticModelsForAuths(auths []*coreauth.Auth) int {
+	if s == nil || len(auths) == 0 {
+		return 0
+	}
+	registeredIDs := make([]string, 0)
+	for _, auth := range auths {
+		if !shouldRegisterAntigravityStaticModels(auth) {
+			continue
+		}
+		provider := "antigravity"
+		authKind := auth.AuthKind()
+		excluded := s.oauthExcludedModels(provider, authKind)
+		if auth.Attributes != nil {
+			if val, ok := auth.Attributes["excluded_models"]; ok && strings.TrimSpace(val) != "" {
+				excluded = strings.Split(val, ",")
+			}
+		}
+		models := registry.GetAntigravityModels()
+		models = applyExcludedModels(models, excluded)
+		models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, auth.Attributes, models)
+		if len(models) == 0 {
+			continue
+		}
+		s.registerResolvedModelsForAuth(auth, provider, applyModelPrefixes(models, auth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+		registeredIDs = append(registeredIDs, auth.ID)
+	}
+	if s.coreManager != nil {
+		for _, id := range registeredIDs {
+			s.coreManager.RefreshSchedulerEntry(id)
+		}
+	}
+	return len(registeredIDs)
+}
+
+func shouldRegisterAntigravityStaticModels(auth *coreauth.Auth) bool {
+	if auth == nil || auth.ID == "" || auth.Disabled {
+		return false
+	}
+	if auth.Status != "" && auth.Status != coreauth.StatusActive {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity")
 }
 
 func (s *Service) runModelRegistrationTasks(ctx context.Context, tasks []modelRegistrationTask) {
@@ -514,6 +559,7 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 
 	registrationCtx := coreauth.WithDeferredAPIKeyModelAliasRebuild(ctx)
 	tasks := make([]modelRegistrationTask, 0, len(updates))
+	staticModelAuths := make([]*coreauth.Auth, 0, len(updates))
 	needsPluginSync := false
 	needsAliasRebuild := false
 	for _, update := range updates {
@@ -528,6 +574,7 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 			}
 			needsAliasRebuild = true
 			authForRegistration := auth
+			staticModelAuths = append(staticModelAuths, authForRegistration)
 			tasks = append(tasks, modelRegistrationTask{
 				phase:    modelRegistrationPhase(authForRegistration),
 				category: modelRegistrationCategory(authForRegistration),
@@ -554,6 +601,7 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 	if needsAliasRebuild {
 		s.coreManager.RefreshAPIKeyModelAlias()
 	}
+	s.registerAntigravityStaticModelsForAuths(staticModelAuths)
 	s.runModelRegistrationTasks(registrationCtx, tasks)
 	if needsPluginSync {
 		s.syncPluginRuntime(registrationCtx)
@@ -675,6 +723,7 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 	if auth == nil {
 		return
 	}
+	s.registerAntigravityStaticModelsForAuths([]*coreauth.Auth{auth})
 	s.completeModelRegistrationForAuth(ctx, auth)
 	s.syncPluginRuntime(ctx)
 }
@@ -1642,6 +1691,9 @@ func (s *Service) Run(ctx context.Context) error {
 	if s.coreManager != nil && !homeEnabled {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
+		}
+		if registered := s.registerAntigravityStaticModelsForAuths(s.coreManager.List()); registered > 0 {
+			log.Infof("registered static Antigravity models for %d active auth(s)", registered)
 		}
 		s.registerConfigAPIKeyAuths(coreauth.WithSkipPersist(ctx), s.cfg)
 		if s.cfg.SaveCooldownStatus {
