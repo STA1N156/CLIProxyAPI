@@ -1620,7 +1620,11 @@ func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Au
 }
 
 func (e *AntigravityExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
-	return antigravityProjectIDFromAuth(auth) == ""
+	if antigravityProjectIDFromAuth(auth) == "" {
+		return true
+	}
+	accessToken := metaStringValue(auth.Metadata, "access_token")
+	return accessToken == "" || !tokenExpiry(auth.Metadata).After(time.Now().Add(refreshSkew))
 }
 
 func (e *AntigravityExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {

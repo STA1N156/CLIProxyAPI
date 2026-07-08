@@ -249,6 +249,46 @@ func TestAntigravityPrepareRequestAuth_FetchesMissingProjectID(t *testing.T) {
 	}
 }
 
+func TestAntigravityPrepareRequestAuth_RefreshesExpiredTokenWithProjectID(t *testing.T) {
+	executor := &AntigravityExecutor{}
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{
+		"access_token":  "expired-token",
+		"refresh_token": "refresh-token",
+		"expired":       time.Now().Add(-1 * time.Minute).Format(time.RFC3339),
+		"project_id":    "existing-project",
+	}}
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://oauth2.googleapis.com/token" {
+			t.Fatalf("unexpected token refresh request: %s", req.URL.String())
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}`)),
+		}, nil
+	}))
+
+	updated, err := executor.PrepareRequestAuth(ctx, auth)
+	if err != nil {
+		t.Fatalf("PrepareRequestAuth error: %v", err)
+	}
+	if updated == nil {
+		t.Fatalf("PrepareRequestAuth returned nil auth")
+	}
+	if got := metaStringValue(auth.Metadata, "access_token"); got != "expired-token" {
+		t.Fatalf("original auth access_token = %q, want expired-token", got)
+	}
+	if got := metaStringValue(updated.Metadata, "access_token"); got != "fresh-token" {
+		t.Fatalf("updated auth access_token = %q, want fresh-token", got)
+	}
+	if got := metaStringValue(updated.Metadata, "refresh_token"); got != "fresh-refresh-token" {
+		t.Fatalf("updated auth refresh_token = %q, want fresh-refresh-token", got)
+	}
+	if got := antigravityProjectIDFromAuth(updated); got != "existing-project" {
+		t.Fatalf("updated auth project_id = %q, want existing-project", got)
+	}
+}
+
 func TestAntigravityBuildRequest_RejectsMissingProjectID(t *testing.T) {
 	executor := &AntigravityExecutor{}
 	auth := &cliproxyauth.Auth{Metadata: map[string]any{}}
