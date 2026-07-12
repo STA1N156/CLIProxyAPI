@@ -36,3 +36,12 @@ func TestAntigravityConvertStreamToNonStreamReconstructsMissingPromptTokens(t *t
 		t.Fatalf("promptTokenCount = %d, want 24896; output=%s", value, got)
 	}
 }
+
+func TestEnsureAntigravityPromptTokenCountForDirectNonStream(t *testing.T) {
+	payload := []byte(`{"response":{"usageMetadata":{"candidatesTokenCount":2787,"thoughtsTokenCount":2317,"totalTokenCount":34200}}}`)
+
+	got := ensureAntigravityPromptTokenCount(payload)
+	if value := gjson.GetBytes(got, "response.usageMetadata.promptTokenCount").Int(); value != 29096 {
+		t.Fatalf("promptTokenCount = %d, want 29096; output=%s", value, got)
+	}
+}

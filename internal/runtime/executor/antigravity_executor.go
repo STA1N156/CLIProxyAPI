@@ -807,6 +807,7 @@ attemptLoop:
 			if useCredits {
 				clearAntigravityCreditsFailureState(auth)
 			}
+			bodyBytes = ensureAntigravityPromptTokenCount(bodyBytes)
 			cacheAntigravityReasoningReplayFromResponse(ctx, replayScope, requestPayload, bodyBytes)
 			bodyBytes = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, bodyBytes)
 			reporter.Publish(ctx, helps.ParseAntigravityUsage(bodyBytes))
@@ -1290,15 +1291,6 @@ func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
 		updatedTemplate, _ = sjson.SetBytes([]byte(responseTemplate), "responseId", responseID)
 		responseTemplate = string(updatedTemplate)
 	}
-	if prompt, ok := usageMetadata["promptTokenCount"].(float64); !ok || prompt == 0 {
-		total, hasTotal := usageMetadata["totalTokenCount"].(float64)
-		candidates, _ := usageMetadata["candidatesTokenCount"].(float64)
-		thoughts, _ := usageMetadata["thoughtsTokenCount"].(float64)
-		toolUsePrompt, _ := usageMetadata["toolUsePromptTokenCount"].(float64)
-		if calculated := total - candidates - thoughts - toolUsePrompt; hasTotal && calculated > 0 {
-			usageMetadata["promptTokenCount"] = calculated
-		}
-	}
 	if len(usageMetadata) > 0 {
 		usageRaw, _ := json.Marshal(usageMetadata)
 		updatedTemplate, _ = sjson.SetRawBytes([]byte(responseTemplate), "usageMetadata", usageRaw)
@@ -1321,7 +1313,23 @@ func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
 		updatedOutput, _ = sjson.SetBytes([]byte(output), "traceId", traceID)
 		output = string(updatedOutput)
 	}
-	return []byte(output)
+	return ensureAntigravityPromptTokenCount([]byte(output))
+}
+
+func ensureAntigravityPromptTokenCount(payload []byte) []byte {
+	for _, path := range []string{"response.usageMetadata", "usageMetadata"} {
+		usage := gjson.GetBytes(payload, path)
+		if !usage.Exists() || usage.Get("promptTokenCount").Int() > 0 {
+			continue
+		}
+		total := usage.Get("totalTokenCount").Int()
+		prompt := total - usage.Get("candidatesTokenCount").Int() - usage.Get("thoughtsTokenCount").Int() - usage.Get("toolUsePromptTokenCount").Int()
+		if total > 0 && prompt > 0 {
+			updated, _ := sjson.SetBytes(payload, path+".promptTokenCount", prompt)
+			return updated
+		}
+	}
+	return payload
 }
 
 // ExecuteStream performs a streaming request to the Antigravity API.
