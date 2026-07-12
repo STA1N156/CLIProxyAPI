@@ -1290,6 +1290,15 @@ func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
 		updatedTemplate, _ = sjson.SetBytes([]byte(responseTemplate), "responseId", responseID)
 		responseTemplate = string(updatedTemplate)
 	}
+	if prompt, ok := usageMetadata["promptTokenCount"].(float64); !ok || prompt == 0 {
+		total, hasTotal := usageMetadata["totalTokenCount"].(float64)
+		candidates, _ := usageMetadata["candidatesTokenCount"].(float64)
+		thoughts, _ := usageMetadata["thoughtsTokenCount"].(float64)
+		toolUsePrompt, _ := usageMetadata["toolUsePromptTokenCount"].(float64)
+		if calculated := total - candidates - thoughts - toolUsePrompt; hasTotal && calculated > 0 {
+			usageMetadata["promptTokenCount"] = calculated
+		}
+	}
 	if len(usageMetadata) > 0 {
 		usageRaw, _ := json.Marshal(usageMetadata)
 		updatedTemplate, _ = sjson.SetRawBytes([]byte(responseTemplate), "usageMetadata", usageRaw)

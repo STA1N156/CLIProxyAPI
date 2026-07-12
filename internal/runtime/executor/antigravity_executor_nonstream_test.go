@@ -27,3 +27,12 @@ func TestAntigravityConvertStreamToNonStreamMergesUsageMetadata(t *testing.T) {
 		t.Fatalf("internal cpaUsageMetadata leaked to output: %s", got)
 	}
 }
+
+func TestAntigravityConvertStreamToNonStreamReconstructsMissingPromptTokens(t *testing.T) {
+	stream := []byte(`{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"candidatesTokenCount":1990,"thoughtsTokenCount":1739,"totalTokenCount":28625}}}`)
+
+	got := (&AntigravityExecutor{}).convertStreamToNonStream(stream)
+	if value := gjson.GetBytes(got, "response.usageMetadata.promptTokenCount").Int(); value != 24896 {
+		t.Fatalf("promptTokenCount = %d, want 24896; output=%s", value, got)
+	}
+}
