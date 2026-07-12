@@ -1109,11 +1109,29 @@ func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
 	var modelVersion string
 	var responseID string
 	var role string
-	var usageRaw string
+	usageMetadata := make(map[string]interface{})
 	parts := make([]map[string]interface{}, 0)
 	var pendingKind string
 	var pendingText strings.Builder
 	var pendingThoughtSig string
+
+	mergeUsageMetadata := func(result gjson.Result) {
+		if !result.Exists() || !result.IsObject() {
+			return
+		}
+		var current map[string]interface{}
+		if err := json.Unmarshal([]byte(result.Raw), &current); err != nil {
+			return
+		}
+		for key, value := range current {
+			if number, ok := value.(float64); ok {
+				if previous, exists := usageMetadata[key].(float64); exists && previous > number {
+					continue
+				}
+			}
+			usageMetadata[key] = value
+		}
+	}
 
 	flushPending := func() {
 		if pendingKind == "" {
@@ -1204,11 +1222,10 @@ func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
 		if responseIDResult := responseNode.Get("responseId"); responseIDResult.Exists() && responseIDResult.String() != "" {
 			responseID = responseIDResult.String()
 		}
-		if usageResult := responseNode.Get("usageMetadata"); usageResult.Exists() {
-			usageRaw = usageResult.Raw
-		} else if usageMetadataResult := root.Get("usageMetadata"); usageMetadataResult.Exists() {
-			usageRaw = usageMetadataResult.Raw
-		}
+		mergeUsageMetadata(responseNode.Get("cpaUsageMetadata"))
+		mergeUsageMetadata(root.Get("cpaUsageMetadata"))
+		mergeUsageMetadata(responseNode.Get("usageMetadata"))
+		mergeUsageMetadata(root.Get("usageMetadata"))
 
 		if partsResult := responseNode.Get("candidates.0.content.parts"); partsResult.IsArray() {
 			for _, part := range partsResult.Array() {
@@ -1273,8 +1290,9 @@ func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
 		updatedTemplate, _ = sjson.SetBytes([]byte(responseTemplate), "responseId", responseID)
 		responseTemplate = string(updatedTemplate)
 	}
-	if usageRaw != "" {
-		updatedTemplate, _ = sjson.SetRawBytes([]byte(responseTemplate), "usageMetadata", []byte(usageRaw))
+	if len(usageMetadata) > 0 {
+		usageRaw, _ := json.Marshal(usageMetadata)
+		updatedTemplate, _ = sjson.SetRawBytes([]byte(responseTemplate), "usageMetadata", usageRaw)
 		responseTemplate = string(updatedTemplate)
 	} else if !gjson.Get(responseTemplate, "usageMetadata").Exists() {
 		updatedTemplate, _ = sjson.SetBytes([]byte(responseTemplate), "usageMetadata.promptTokenCount", 0)
@@ -1284,6 +1302,8 @@ func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
 		updatedTemplate, _ = sjson.SetBytes([]byte(responseTemplate), "usageMetadata.totalTokenCount", 0)
 		responseTemplate = string(updatedTemplate)
 	}
+	updatedTemplate, _ = sjson.DeleteBytes([]byte(responseTemplate), "cpaUsageMetadata")
+	responseTemplate = string(updatedTemplate)
 
 	output := `{"response":{},"traceId":""}`
 	updatedOutput, _ := sjson.SetRawBytes([]byte(output), "response", []byte(responseTemplate))
