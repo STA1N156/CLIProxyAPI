@@ -56,6 +56,9 @@ func TestGetAntigravityModelsIncludesBuiltins(t *testing.T) {
 		antigravityBuiltinGemini25FlashModelID,
 		antigravityBuiltinGemini25FlashLiteModelID,
 		antigravityBuiltinGemini36FlashTieredID,
+		antigravityBuiltinGemini36FlashLowID,
+		antigravityBuiltinGemini36FlashMediumID,
+		antigravityBuiltinGemini36FlashHighID,
 	} {
 		found := false
 		for _, model := range models {
