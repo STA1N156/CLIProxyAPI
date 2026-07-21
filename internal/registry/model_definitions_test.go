@@ -50,6 +50,25 @@ func TestWithXAIBuiltinsIncludesVideoPreviewModel(t *testing.T) {
 	t.Fatalf("expected xAI builtin model %s", xaiBuiltinVideo15PreviewModelID)
 }
 
+func TestGetAntigravityModelsIncludesGemini25FlashModels(t *testing.T) {
+	models := GetAntigravityModels()
+	for _, want := range []string{
+		antigravityBuiltinGemini25FlashModelID,
+		antigravityBuiltinGemini25FlashLiteModelID,
+	} {
+		found := false
+		for _, model := range models {
+			if model != nil && model.ID == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected Antigravity model %s", want)
+		}
+	}
+}
+
 func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing.T) {
 	registryRef := GetGlobalRegistry()
 	registryRef.RegisterClient("test-antigravity-websearch-route", "antigravity", []*ModelInfo{

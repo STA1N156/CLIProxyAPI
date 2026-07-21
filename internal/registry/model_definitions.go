@@ -7,12 +7,14 @@ import (
 )
 
 const (
-	codexBuiltinImage15ModelID      = "gpt-image-1.5"
-	codexBuiltinImageModelID        = "gpt-image-2"
-	xaiBuiltinImageModelID          = "grok-imagine-image"
-	xaiBuiltinImageQualityModelID   = "grok-imagine-image-quality"
-	xaiBuiltinVideoModelID          = "grok-imagine-video"
-	xaiBuiltinVideo15PreviewModelID = "grok-imagine-video-1.5-preview"
+	antigravityBuiltinGemini25FlashModelID     = "gemini-2.5-flash"
+	antigravityBuiltinGemini25FlashLiteModelID = "gemini-2.5-flash-lite"
+	codexBuiltinImage15ModelID                 = "gpt-image-1.5"
+	codexBuiltinImageModelID                   = "gpt-image-2"
+	xaiBuiltinImageModelID                     = "grok-imagine-image"
+	xaiBuiltinImageQualityModelID              = "grok-imagine-image-quality"
+	xaiBuiltinVideoModelID                     = "grok-imagine-video"
+	xaiBuiltinVideo15PreviewModelID            = "grok-imagine-video-1.5-preview"
 )
 
 // staticModelsJSON mirrors the top-level structure of models.json.
@@ -77,7 +79,7 @@ func GetKimiModels() []*ModelInfo {
 
 // GetAntigravityModels returns the standard Antigravity model definitions.
 func GetAntigravityModels() []*ModelInfo {
-	return cloneModelInfos(getModels().Antigravity)
+	return WithAntigravityBuiltins(cloneModelInfos(getModels().Antigravity))
 }
 
 // AntigravityWebSearchModelFor returns the Antigravity model that should run a
@@ -121,6 +123,34 @@ func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
 // not depend on remote models.json updates.
 func WithXAIBuiltins(models []*ModelInfo) []*ModelInfo {
 	return upsertModelInfos(models, xaiBuiltinImageModelInfo(), xaiBuiltinImageQualityModelInfo(), xaiBuiltinVideoModelInfo(), xaiBuiltinVideo15PreviewModelInfo())
+}
+
+// WithAntigravityBuiltins keeps supported models available even when the remote
+// Antigravity catalog does not list them.
+func WithAntigravityBuiltins(models []*ModelInfo) []*ModelInfo {
+	return upsertModelInfos(models,
+		antigravityBuiltinGemini25ModelInfo(antigravityBuiltinGemini25FlashModelID, "Gemini 2.5 Flash"),
+		antigravityBuiltinGemini25ModelInfo(antigravityBuiltinGemini25FlashLiteModelID, "Gemini 2.5 Flash Lite"),
+	)
+}
+
+func antigravityBuiltinGemini25ModelInfo(id, displayName string) *ModelInfo {
+	return &ModelInfo{
+		ID:                  id,
+		Object:              "model",
+		OwnedBy:             "antigravity",
+		Type:                "antigravity",
+		DisplayName:         displayName,
+		Name:                id,
+		Description:         displayName,
+		ContextLength:       1048576,
+		MaxCompletionTokens: 65536,
+		Thinking: &ThinkingSupport{
+			Max:            24576,
+			ZeroAllowed:    true,
+			DynamicAllowed: true,
+		},
+	}
 }
 
 func normalizeAntigravityCapabilityModelID(modelID string) string {

@@ -65,8 +65,21 @@ func TestRegisterModelsForAuthBatch_AntigravityStaticModelsSurviveCanceledContex
 	if sawFetch {
 		t.Fatal("static Antigravity registration should not fetch upstream models")
 	}
-	if models := registry.GetModelsForClient(active.ID); len(models) == 0 {
+	models := registry.GetModelsForClient(active.ID)
+	if len(models) == 0 {
 		t.Fatal("expected active Antigravity auth to get static model registration")
+	}
+	for _, want := range []string{"gemini-2.5-flash", "gemini-2.5-flash-lite"} {
+		found := false
+		for _, model := range models {
+			if model != nil && model.ID == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected active Antigravity auth to register model %s", want)
+		}
 	}
 	if models := registry.GetModelsForClient(disabled.ID); len(models) != 0 {
 		t.Fatalf("disabled auth models = %d, want 0", len(models))
