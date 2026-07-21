@@ -69,7 +69,7 @@ func TestRegisterModelsForAuthBatch_AntigravityStaticModelsSurviveCanceledContex
 	if len(models) == 0 {
 		t.Fatal("expected active Antigravity auth to get static model registration")
 	}
-	for _, want := range []string{"gemini-2.5-flash", "gemini-2.5-flash-lite"} {
+	for _, want := range []string{"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.6-flash-tiered"} {
 		found := false
 		for _, model := range models {
 			if model != nil && model.ID == want {

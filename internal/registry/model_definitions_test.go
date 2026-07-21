@@ -50,11 +50,12 @@ func TestWithXAIBuiltinsIncludesVideoPreviewModel(t *testing.T) {
 	t.Fatalf("expected xAI builtin model %s", xaiBuiltinVideo15PreviewModelID)
 }
 
-func TestGetAntigravityModelsIncludesGemini25FlashModels(t *testing.T) {
+func TestGetAntigravityModelsIncludesBuiltins(t *testing.T) {
 	models := GetAntigravityModels()
 	for _, want := range []string{
 		antigravityBuiltinGemini25FlashModelID,
 		antigravityBuiltinGemini25FlashLiteModelID,
+		antigravityBuiltinGemini36FlashTieredID,
 	} {
 		found := false
 		for _, model := range models {

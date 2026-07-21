@@ -9,6 +9,7 @@ import (
 const (
 	antigravityBuiltinGemini25FlashModelID     = "gemini-2.5-flash"
 	antigravityBuiltinGemini25FlashLiteModelID = "gemini-2.5-flash-lite"
+	antigravityBuiltinGemini36FlashTieredID    = "gemini-3.6-flash-tiered"
 	codexBuiltinImage15ModelID                 = "gpt-image-1.5"
 	codexBuiltinImageModelID                   = "gpt-image-2"
 	xaiBuiltinImageModelID                     = "grok-imagine-image"
@@ -131,6 +132,7 @@ func WithAntigravityBuiltins(models []*ModelInfo) []*ModelInfo {
 	return upsertModelInfos(models,
 		antigravityBuiltinGemini25ModelInfo(antigravityBuiltinGemini25FlashModelID, "Gemini 2.5 Flash"),
 		antigravityBuiltinGemini25ModelInfo(antigravityBuiltinGemini25FlashLiteModelID, "Gemini 2.5 Flash Lite"),
+		antigravityBuiltinGemini36FlashTieredModelInfo(),
 	)
 }
 
@@ -149,6 +151,26 @@ func antigravityBuiltinGemini25ModelInfo(id, displayName string) *ModelInfo {
 			Max:            24576,
 			ZeroAllowed:    true,
 			DynamicAllowed: true,
+		},
+	}
+}
+
+func antigravityBuiltinGemini36FlashTieredModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:                  antigravityBuiltinGemini36FlashTieredID,
+		Object:              "model",
+		OwnedBy:             "antigravity",
+		Type:                "antigravity",
+		DisplayName:         "Gemini 3.6 Flash (Tiered)",
+		Name:                antigravityBuiltinGemini36FlashTieredID,
+		Description:         "Gemini 3.6 Flash (Tiered)",
+		ContextLength:       1048576,
+		MaxCompletionTokens: 65536,
+		Thinking: &ThinkingSupport{
+			Min:            32,
+			Max:            32768,
+			DynamicAllowed: true,
+			Levels:         []string{"minimal", "low", "medium", "high"},
 		},
 	}
 }
