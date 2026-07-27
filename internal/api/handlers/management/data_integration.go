@@ -2,6 +2,7 @@ package management
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -31,6 +32,10 @@ func (h *Handler) GetDataIntegrationStats(c *gin.Context) {
 	}
 	stats, errStats := h.dataIntegrationStore.Stats(mask, timeRange)
 	if errStats != nil {
+		if errors.Is(errStats, dataintegration.ErrInitializing) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "data integration statistics are initializing"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": errStats.Error()})
 		return
 	}

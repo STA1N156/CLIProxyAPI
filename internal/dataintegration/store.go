@@ -11,11 +11,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -27,9 +30,17 @@ const (
 	minDayStatsVersion = 3
 	maskCount          = 1 << criterionCount
 	queueSize          = 2048
+	rawQueueSize       = 2048
+	maxRawQueueBytes   = 256 << 20
 	maxBatchSize       = 256
 	batchInterval      = 100 * time.Millisecond
 	statsSyncInterval  = time.Second
+)
+
+var (
+	ErrInitializing = errors.New("data integration statistics are initializing")
+	ErrQueueFull    = errors.New("data integration background queue is full")
+	ErrClearing     = errors.New("data integration storage is being cleared")
 )
 
 // StoredRecord is one line in an internal minute shard.
@@ -47,6 +58,15 @@ type pendingRecord struct {
 	tokenCount uint64
 	data       []byte
 	clear      chan clearResponse
+}
+
+type rawRecord struct {
+	capturedAt      time.Time
+	path            string
+	requestID       string
+	sessionID       string
+	contentEncoding string
+	payload         []byte
 }
 
 type clearResponse struct {
@@ -96,6 +116,7 @@ type StatsView struct {
 	AvailableDownload uint64           `json:"available_download"`
 	StorageDirectory  string           `json:"storage_directory"`
 	QueueDepth        int              `json:"queue_depth"`
+	DroppedRequests   uint64           `json:"dropped_requests"`
 	From              string           `json:"from,omitempty"`
 	To                string           `json:"to,omitempty"`
 	UpdatedAt         time.Time        `json:"updated_at"`
@@ -131,16 +152,27 @@ type Store struct {
 
 	maintenanceMu sync.RWMutex
 	queue         chan pendingRecord
+	rawQueue      chan rawRecord
 	stop          chan struct{}
+	workersStop   chan struct{}
 	done          chan struct{}
+	workerWG      sync.WaitGroup
+	rawPending    sync.WaitGroup
+	queuedBytes   atomic.Int64
+	dropped       atomic.Uint64
 
 	stateMu   sync.Mutex
 	closed    bool
+	clearing  bool
 	started   bool
 	active    sync.WaitGroup
 	closeOnce sync.Once
 	initOnce  sync.Once
 	initErr   error
+
+	warmupOnce sync.Once
+	warmupDone chan struct{}
+	warming    bool
 }
 
 // RootDir resolves the storage path. DATA_INTEGRATION_DIR is intended for
@@ -167,16 +199,110 @@ func NewStore(root string) (*Store, error) {
 		dayStats:    make(map[string]*persistedDayStats),
 		dirtyDays:   make(map[string]struct{}),
 		queue:       make(chan pendingRecord, queueSize),
+		rawQueue:    make(chan rawRecord, rawQueueSize),
 		stop:        make(chan struct{}),
+		workersStop: make(chan struct{}),
 		done:        make(chan struct{}),
+		warmupDone:  make(chan struct{}),
 	}
 	return store, nil
 }
 
+// StartWarmup loads statistics in the background. While it is running, callers
+// fail fast instead of delaying proxy requests.
+func (s *Store) StartWarmup() {
+	if s == nil {
+		return
+	}
+	s.warmupOnce.Do(func() {
+		s.stateMu.Lock()
+		s.warming = true
+		s.stateMu.Unlock()
+		go func() {
+			_ = s.ensureInitialized()
+			close(s.warmupDone)
+		}()
+	})
+}
+
+func (s *Store) warmupStatus() error {
+	s.stateMu.Lock()
+	warming := s.warming
+	s.stateMu.Unlock()
+	if !warming {
+		return nil
+	}
+	select {
+	case <-s.warmupDone:
+		return s.initErr
+	default:
+		return ErrInitializing
+	}
+}
+
 // RecordRequest implements the SDK request recorder hook.
 func (s *Store) RecordRequest(path, requestID string, payload []byte) error {
-	_, err := s.Record(path, requestID, payload)
-	return err
+	return s.EnqueueCapturedRequest(
+		time.Now().UTC(),
+		path,
+		requestID,
+		"",
+		"",
+		bytes.Clone(payload),
+	)
+}
+
+// EnqueueCapturedRequest transfers an owned raw request body to the background
+// pipeline. It never waits for validation, statistics initialization, or disk.
+func (s *Store) EnqueueCapturedRequest(
+	capturedAt time.Time,
+	path, requestID, sessionID, contentEncoding string,
+	payload []byte,
+) error {
+	if s == nil {
+		return fmt.Errorf("data integration store is unavailable")
+	}
+	if len(payload) == 0 {
+		return nil
+	}
+	if capturedAt.IsZero() {
+		capturedAt = time.Now().UTC()
+	}
+	record := rawRecord{
+		capturedAt:      capturedAt.UTC(),
+		path:            strings.TrimSpace(path),
+		requestID:       strings.TrimSpace(requestID),
+		sessionID:       strings.TrimSpace(sessionID),
+		contentEncoding: strings.TrimSpace(contentEncoding),
+		payload:         payload,
+	}
+	payloadBytes := int64(len(payload))
+
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.closed {
+		return fmt.Errorf("data integration store is closed")
+	}
+	if s.clearing {
+		s.dropped.Add(1)
+		return ErrClearing
+	}
+	if s.queuedBytes.Load()+payloadBytes > maxRawQueueBytes {
+		s.dropped.Add(1)
+		return ErrQueueFull
+	}
+	s.startPipelineLocked()
+	s.rawPending.Add(1)
+	s.queuedBytes.Add(payloadBytes)
+	select {
+	case s.rawQueue <- record:
+		return nil
+	default:
+		s.queuedBytes.Add(-payloadBytes)
+		s.rawPending.Done()
+		s.dropped.Add(1)
+		return ErrQueueFull
+	}
 }
 
 // Record evaluates and queues one valid JSON request.
@@ -189,52 +315,73 @@ func (s *Store) RecordNative(path, requestID, sessionID string, payload []byte) 
 	if s == nil {
 		return Evaluation{}, fmt.Errorf("data integration store is unavailable")
 	}
+	if errWarmup := s.warmupStatus(); errWarmup != nil {
+		return Evaluation{}, errWarmup
+	}
 	if errInit := s.ensureInitialized(); errInit != nil {
 		return Evaluation{}, errInit
 	}
-	enriched, errEnrich := enrichNativeMetadata(payload, path, sessionID)
-	if errEnrich != nil {
-		return Evaluation{}, fmt.Errorf("add native request metadata: %w", errEnrich)
+	pending, evaluation, errPrepare := preparePendingRecord(
+		time.Now().UTC(),
+		path,
+		requestID,
+		sessionID,
+		payload,
+	)
+	if errPrepare != nil {
+		return Evaluation{}, errPrepare
 	}
-	evaluation, errEvaluate := Evaluate(enriched)
-	if errEvaluate != nil {
-		return Evaluation{}, errEvaluate
-	}
-
-	now := time.Now().UTC()
-	record := StoredRecord{
-		CapturedAt: now,
-		RequestID:  strings.TrimSpace(requestID),
-		Path:       strings.TrimSpace(path),
-		Evaluation: evaluation,
-		Payload:    append(json.RawMessage(nil), enriched...),
-	}
-	recordData, errMarshal := json.Marshal(record)
-	if errMarshal != nil {
-		return Evaluation{}, fmt.Errorf("encode session record: %w", errMarshal)
-	}
-	recordData = append(recordData, '\n')
 
 	s.stateMu.Lock()
 	if s.closed {
 		s.stateMu.Unlock()
 		return Evaluation{}, fmt.Errorf("data integration store is closed")
 	}
-	if !s.started {
-		s.started = true
-		go s.writer()
+	if s.clearing {
+		s.stateMu.Unlock()
+		return Evaluation{}, ErrClearing
 	}
-	s.active.Add(1)
+	s.startPipelineLocked()
+	s.rawPending.Add(1)
 	s.stateMu.Unlock()
-	defer s.active.Done()
+	defer s.rawPending.Done()
 
-	s.queue <- pendingRecord{
-		capturedAt: now,
+	s.queue <- pending
+	return evaluation, nil
+}
+
+func preparePendingRecord(
+	capturedAt time.Time,
+	path, requestID, sessionID string,
+	payload []byte,
+) (pendingRecord, Evaluation, error) {
+	enriched, errEnrich := enrichNativeMetadata(payload, path, sessionID)
+	if errEnrich != nil {
+		return pendingRecord{}, Evaluation{}, fmt.Errorf("add native request metadata: %w", errEnrich)
+	}
+	evaluation, errEvaluate := Evaluate(enriched)
+	if errEvaluate != nil {
+		return pendingRecord{}, Evaluation{}, errEvaluate
+	}
+
+	record := StoredRecord{
+		CapturedAt: capturedAt.UTC(),
+		RequestID:  strings.TrimSpace(requestID),
+		Path:       strings.TrimSpace(path),
+		Evaluation: evaluation,
+		Payload:    json.RawMessage(enriched),
+	}
+	recordData, errMarshal := json.Marshal(record)
+	if errMarshal != nil {
+		return pendingRecord{}, Evaluation{}, fmt.Errorf("encode session record: %w", errMarshal)
+	}
+	recordData = append(recordData, '\n')
+	return pendingRecord{
+		capturedAt: capturedAt.UTC(),
 		mask:       evaluation.Mask,
 		tokenCount: evaluation.TokenCount,
 		data:       recordData,
-	}
-	return evaluation, nil
+	}, evaluation, nil
 }
 
 // Close flushes queued records and the final statistics snapshot.
@@ -256,6 +403,9 @@ func (s *Store) Close(ctx context.Context) error {
 		}
 		go func() {
 			s.active.Wait()
+			s.rawPending.Wait()
+			close(s.workersStop)
+			s.workerWG.Wait()
 			close(s.stop)
 		}()
 	})
@@ -273,6 +423,9 @@ func (s *Store) Close(ctx context.Context) error {
 func (s *Store) Stats(selectedMask uint8, timeRange TimeRange) (StatsView, error) {
 	if s == nil {
 		return StatsView{}, fmt.Errorf("data integration store is unavailable")
+	}
+	if errWarmup := s.warmupStatus(); errWarmup != nil {
+		return StatsView{}, errWarmup
 	}
 	if errInit := s.ensureInitialized(); errInit != nil {
 		return StatsView{}, errInit
@@ -293,7 +446,8 @@ func (s *Store) Stats(selectedMask uint8, timeRange TimeRange) (StatsView, error
 		SelectedCriteria:  KeysForMask(selectedMask),
 		AvailableDownload: matched,
 		StorageDirectory:  filepath.ToSlash(s.root),
-		QueueDepth:        len(s.queue),
+		QueueDepth:        len(s.rawQueue) + len(s.queue),
+		DroppedRequests:   s.dropped.Load(),
 		UpdatedAt:         updatedAt,
 		Criteria:          make([]CriterionStats, 0, len(Criteria)),
 	}
@@ -325,6 +479,9 @@ func (s *Store) Clear(ctx context.Context) (ClearResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if errWarmup := s.warmupStatus(); errWarmup != nil {
+		return ClearResult{}, errWarmup
+	}
 	if errInit := s.ensureInitialized(); errInit != nil {
 		return ClearResult{}, errInit
 	}
@@ -335,14 +492,22 @@ func (s *Store) Clear(ctx context.Context) (ClearResult, error) {
 		s.stateMu.Unlock()
 		return ClearResult{}, fmt.Errorf("data integration store is closed")
 	}
-	if !s.started {
-		s.started = true
-		go s.writer()
+	if s.clearing {
+		s.stateMu.Unlock()
+		return ClearResult{}, ErrClearing
 	}
+	s.clearing = true
+	s.startPipelineLocked()
 	s.active.Add(1)
 	s.stateMu.Unlock()
-	defer s.active.Done()
+	defer func() {
+		s.stateMu.Lock()
+		s.clearing = false
+		s.stateMu.Unlock()
+		s.active.Done()
+	}()
 
+	s.rawPending.Wait()
 	select {
 	case s.queue <- pendingRecord{clear: response}:
 	case <-ctx.Done():
@@ -372,6 +537,9 @@ func (s *Store) WriteZIPWithOptions(
 ) error {
 	if s == nil {
 		return fmt.Errorf("data integration store is unavailable")
+	}
+	if errWarmup := s.warmupStatus(); errWarmup != nil {
+		return errWarmup
 	}
 	if errInit := s.ensureInitialized(); errInit != nil {
 		return errInit
@@ -500,6 +668,91 @@ func (s *Store) WriteZIPWithOptions(
 	return nil
 }
 
+func (s *Store) startPipelineLocked() {
+	if s.started {
+		return
+	}
+	s.started = true
+	go s.writer()
+	workers := runtime.GOMAXPROCS(0) / 2
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 4 {
+		workers = 4
+	}
+	s.workerWG.Add(workers)
+	for index := 0; index < workers; index++ {
+		go s.rawWorker()
+	}
+}
+
+func (s *Store) rawWorker() {
+	defer s.workerWG.Done()
+	for {
+		select {
+		case raw := <-s.rawQueue:
+			func() {
+				defer s.rawPending.Done()
+				defer s.queuedBytes.Add(-int64(len(raw.payload)))
+
+				if errInit := s.ensureInitialized(); errInit != nil {
+					log.WithError(errInit).Warn("data integration background initialization failed")
+					return
+				}
+				payload, errDecode := decodeRawPayload(raw.payload, raw.contentEncoding)
+				if errDecode != nil {
+					log.WithError(errDecode).Debug("skipping undecodable data integration request")
+					return
+				}
+				pending, _, errPrepare := preparePendingRecord(
+					raw.capturedAt,
+					raw.path,
+					raw.requestID,
+					raw.sessionID,
+					payload,
+				)
+				if errPrepare != nil {
+					log.WithError(errPrepare).Debug("skipping invalid data integration request")
+					return
+				}
+				s.queue <- pending
+			}()
+		case <-s.workersStop:
+			return
+		}
+	}
+}
+
+func decodeRawPayload(payload []byte, contentEncoding string) ([]byte, error) {
+	contentEncoding = strings.TrimSpace(contentEncoding)
+	if contentEncoding == "" || strings.EqualFold(contentEncoding, "identity") {
+		return payload, nil
+	}
+	body := payload
+	parts := strings.Split(contentEncoding, ",")
+	for index := len(parts) - 1; index >= 0; index-- {
+		switch encoding := strings.ToLower(strings.TrimSpace(parts[index])); encoding {
+		case "", "identity":
+			continue
+		case "zstd":
+			decoder, errDecoder := zstd.NewReader(bytes.NewReader(body))
+			if errDecoder != nil {
+				return nil, fmt.Errorf("create zstd request decoder: %w", errDecoder)
+			}
+			decoded, errRead := io.ReadAll(decoder)
+			decoder.Close()
+			if errRead != nil {
+				return nil, fmt.Errorf("decode zstd request body: %w", errRead)
+			}
+			body = decoded
+		default:
+			return nil, fmt.Errorf("unsupported request content encoding: %s", encoding)
+		}
+	}
+	return body, nil
+}
+
 func (s *Store) writer() {
 	defer close(s.done)
 	batchTicker := time.NewTicker(batchInterval)
@@ -599,6 +852,7 @@ func (s *Store) clearStoredData() (ClearResult, error) {
 	s.dayStats = make(map[string]*persistedDayStats)
 	s.dirtyDays = make(map[string]struct{})
 	s.dayStatsMu.Unlock()
+	s.dropped.Store(0)
 	if errStats := s.writeStats(); errStats != nil {
 		return ClearResult{}, fmt.Errorf("write cleared data integration statistics: %w", errStats)
 	}

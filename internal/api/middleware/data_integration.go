@@ -2,10 +2,11 @@ package middleware
 
 import (
 	"bytes"
-	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/dataintegration"
@@ -13,38 +14,58 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// DataIntegrationMiddleware records authenticated JSON session requests after
-// their six selectable validation results have been calculated.
+// DataIntegrationMiddleware copies authenticated session requests and hands
+// them to the background pipeline after the proxy handler has completed.
 func DataIntegrationMiddleware(store *dataintegration.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if store == nil || !isDataIntegrationRequest(c.Request) {
+		if store == nil || !isDataIntegrationRequest(c.Request) || c.Request.Body == nil {
 			c.Next()
 			return
 		}
 
-		body, errRead := io.ReadAll(c.Request.Body)
-		if errRead != nil {
-			c.Next()
-			return
-		}
-		c.Request.Body = io.NopCloser(bytes.NewReader(body))
+		body := &capturedRequestBody{source: c.Request.Body}
+		c.Request.Body = body
+		capturedAt := time.Now().UTC()
+		path := c.Request.URL.Path
+		requestID := logging.GetGinRequestID(c)
+		sessionID := requestSessionID(c.Request)
+		contentEncoding := c.Request.Header.Get("Content-Encoding")
 
-		decoded, errDecode := decodeCapturedRequestBody(body, c.Request.Header.Get("Content-Encoding"))
-		if errDecode != nil || !json.Valid(decoded) {
-			c.Next()
-			return
-		}
-
-		if _, errRecord := store.RecordNative(
-			c.Request.URL.Path,
-			logging.GetGinRequestID(c),
-			requestSessionID(c.Request),
-			decoded,
-		); errRecord != nil {
-			log.WithError(errRecord).Warn("failed to store data integration request")
-		}
 		c.Next()
+		if errRecord := store.EnqueueCapturedRequest(
+			capturedAt,
+			path,
+			requestID,
+			sessionID,
+			contentEncoding,
+			body.Bytes(),
+		); errRecord != nil &&
+			!errors.Is(errRecord, dataintegration.ErrQueueFull) &&
+			!errors.Is(errRecord, dataintegration.ErrClearing) {
+			log.WithError(errRecord).Warn("failed to queue data integration request")
+		}
 	}
+}
+
+type capturedRequestBody struct {
+	source io.ReadCloser
+	data   bytes.Buffer
+}
+
+func (b *capturedRequestBody) Read(buffer []byte) (int, error) {
+	read, errRead := b.source.Read(buffer)
+	if read > 0 {
+		_, _ = b.data.Write(buffer[:read])
+	}
+	return read, errRead
+}
+
+func (b *capturedRequestBody) Close() error {
+	return b.source.Close()
+}
+
+func (b *capturedRequestBody) Bytes() []byte {
+	return b.data.Bytes()
 }
 
 func requestSessionID(request *http.Request) string {

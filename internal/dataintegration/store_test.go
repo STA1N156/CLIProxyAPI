@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 func TestStoreFiltersAndWritesOneFilePerSessionZIP(t *testing.T) {
@@ -273,8 +276,15 @@ func TestStoreClearRemovesExistingDataAndKeepsNewRequests(t *testing.T) {
 	}
 	payload := validOpenAISession(t)
 	for index := 0; index < 2; index++ {
-		if _, errRecord := store.Record("/v1/responses", fmt.Sprintf("before-%d", index), payload); errRecord != nil {
-			t.Fatalf("Record(before clear) error = %v", errRecord)
+		if errEnqueue := store.EnqueueCapturedRequest(
+			time.Now(),
+			"/v1/responses",
+			fmt.Sprintf("before-%d", index),
+			"",
+			"",
+			bytes.Clone(payload),
+		); errEnqueue != nil {
+			t.Fatalf("EnqueueCapturedRequest(before clear) error = %v", errEnqueue)
 		}
 	}
 
@@ -294,8 +304,15 @@ func TestStoreClearRemovesExistingDataAndKeepsNewRequests(t *testing.T) {
 		t.Fatalf("shards after clear = %v, %v", shards, errShards)
 	}
 
-	if _, errRecord := store.Record("/v1/responses", "after-clear", payload); errRecord != nil {
-		t.Fatalf("Record(after clear) error = %v", errRecord)
+	if errEnqueue := store.EnqueueCapturedRequest(
+		time.Now(),
+		"/v1/responses",
+		"after-clear",
+		"",
+		"",
+		bytes.Clone(payload),
+	); errEnqueue != nil {
+		t.Fatalf("EnqueueCapturedRequest(after clear) error = %v", errEnqueue)
 	}
 	if errClose := store.Close(context.Background()); errClose != nil {
 		t.Fatalf("Close() error = %v", errClose)
@@ -303,6 +320,83 @@ func TestStoreClearRemovesExistingDataAndKeepsNewRequests(t *testing.T) {
 	remaining, errRemaining := store.Stats(0, TimeRange{})
 	if errRemaining != nil || remaining.TotalRequests != 1 {
 		t.Fatalf("Stats(final) total/error = %d/%v", remaining.TotalRequests, errRemaining)
+	}
+}
+
+func TestStoreProcessesCapturedZstdRequestInBackground(t *testing.T) {
+	t.Parallel()
+	store, errStore := NewStore(t.TempDir())
+	if errStore != nil {
+		t.Fatalf("NewStore() error = %v", errStore)
+	}
+	encoder, errEncoder := zstd.NewWriter(nil)
+	if errEncoder != nil {
+		t.Fatalf("zstd.NewWriter() error = %v", errEncoder)
+	}
+	compressed := encoder.EncodeAll(validOpenAISession(t), nil)
+	encoder.Close()
+
+	if errEnqueue := store.EnqueueCapturedRequest(
+		time.Now().UTC(),
+		"/v1/chat/completions",
+		"request-1",
+		"session-1",
+		"zstd",
+		compressed,
+	); errEnqueue != nil {
+		t.Fatalf("EnqueueCapturedRequest() error = %v", errEnqueue)
+	}
+	if errClose := store.Close(context.Background()); errClose != nil {
+		t.Fatalf("Close() error = %v", errClose)
+	}
+	stats, errStats := store.Stats(0, TimeRange{})
+	if errStats != nil || stats.TotalRequests != 1 {
+		t.Fatalf("Stats() total/error = %d/%v, want 1/nil", stats.TotalRequests, errStats)
+	}
+}
+
+func TestStoreFullBackgroundQueueFailsFast(t *testing.T) {
+	store, errStore := NewStore(t.TempDir())
+	if errStore != nil {
+		t.Fatalf("NewStore() error = %v", errStore)
+	}
+	store.rawQueue = make(chan rawRecord, 1)
+	store.stateMu.Lock()
+	store.started = true
+	store.stateMu.Unlock()
+	if errEnqueue := store.EnqueueCapturedRequest(time.Now(), "/", "", "", "", []byte(`{}`)); errEnqueue != nil {
+		t.Fatalf("first EnqueueCapturedRequest() error = %v", errEnqueue)
+	}
+
+	startedAt := time.Now()
+	errEnqueue := store.EnqueueCapturedRequest(time.Now(), "/", "", "", "", []byte(`{}`))
+	if !errors.Is(errEnqueue, ErrQueueFull) {
+		t.Fatalf("second EnqueueCapturedRequest() error = %v, want ErrQueueFull", errEnqueue)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+		t.Fatalf("full queue blocked for %v", elapsed)
+	}
+	if dropped := store.dropped.Load(); dropped != 1 {
+		t.Fatalf("dropped requests = %d, want 1", dropped)
+	}
+}
+
+func TestStoreWarmupMakesStatsFailFast(t *testing.T) {
+	store, errStore := NewStore(t.TempDir())
+	if errStore != nil {
+		t.Fatalf("NewStore() error = %v", errStore)
+	}
+	store.stateMu.Lock()
+	store.warming = true
+	store.stateMu.Unlock()
+
+	startedAt := time.Now()
+	_, errStats := store.Stats(0, TimeRange{})
+	if !errors.Is(errStats, ErrInitializing) {
+		t.Fatalf("Stats() error = %v, want ErrInitializing", errStats)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+		t.Fatalf("initializing stats blocked for %v", elapsed)
 	}
 }
 

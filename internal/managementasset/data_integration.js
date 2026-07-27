@@ -147,7 +147,7 @@
       ".cpa-di-button{border:1px solid #d0d5dd;border-radius:10px;background:#fff;color:#344054;padding:10px 15px;font:inherit;font-weight:600;cursor:pointer;transition:.15s ease}.cpa-di-button:hover{background:#f9fafb}.cpa-di-button:disabled{opacity:.45;cursor:not-allowed}" +
       ".cpa-di-card{background:rgba(255,255,255,.96);border:1px solid #e4e7ec;border-radius:16px;padding:21px;box-shadow:0 8px 28px rgba(16,24,40,.055);margin-bottom:18px}" +
       ".cpa-di-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px}.cpa-di-stat{position:relative;overflow:hidden;background:#f8fafc;border:1px solid #eef2f6;border-radius:13px;padding:17px}" +
-      ".cpa-di-stat:first-child{background:linear-gradient(135deg,#eef2ff,#f8fafc)}.cpa-di-stat b{display:block;font-size:27px;line-height:1.2;margin-top:7px;overflow-wrap:anywhere}.cpa-di-label{color:#667085;font-size:13px}" +
+      ".cpa-di-stat:first-child{background:linear-gradient(135deg,#eef2ff,#f8fafc)}.cpa-di-stat b{display:block;font-size:27px;line-height:1.2;margin-top:7px;overflow-wrap:anywhere}.cpa-di-stat small{display:block;margin-top:5px;color:#667085}.cpa-di-label{color:#667085;font-size:13px}" +
       ".cpa-di-meta{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:15px;padding-top:14px;border-top:1px solid #eef2f6;color:#667085;font-size:13px}.cpa-di-meta strong{color:#344054}" +
       ".cpa-di-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}.cpa-di-section-head strong{font-size:17px}.cpa-di-help{margin:5px 0 0;color:#667085;font-size:13px}" +
       ".cpa-di-badge{border-radius:999px;background:#eef2ff;color:#4338ca;padding:6px 10px;font-size:12px;font-weight:700;white-space:nowrap}" +
@@ -178,7 +178,7 @@
       '<div class="cpa-di-stat"><span class="cpa-di-label">请求满足比率</span><b id="cpa-di-rate">--</b></div>' +
       '<div class="cpa-di-stat"><span class="cpa-di-label">满足 / 总请求</span><b id="cpa-di-counts">--</b></div>' +
       '<div class="cpa-di-stat"><span class="cpa-di-label">匹配 Token 总数</span><b id="cpa-di-tokens">--</b></div>' +
-      '<div class="cpa-di-stat"><span class="cpa-di-label">待写入队列</span><b id="cpa-di-queue">--</b></div>' +
+      '<div class="cpa-di-stat"><span class="cpa-di-label">后台队列</span><b id="cpa-di-queue">--</b><small id="cpa-di-dropped">未发生丢弃</small></div>' +
       '</div><div class="cpa-di-meta"><span>存储位置：<strong id="cpa-di-storage">/data</strong></span><span id="cpa-di-updated">等待读取统计</span></div></div>' +
       '<div class="cpa-di-card"><div class="cpa-di-section-head"><div><strong>筛选条件</strong><p class="cpa-di-help">已勾选条件按“同时满足”计算；不勾选则包含全部数据。</p></div><span class="cpa-di-badge" id="cpa-di-selected-count">已选 6 项</span></div><div class="cpa-di-form">' +
       '<label class="cpa-di-field">开始时间<input id="cpa-di-from" type="datetime-local"></label>' +
@@ -231,6 +231,9 @@
       integer(stats.matched_requests) + " / " + integer(stats.total_requests);
     document.getElementById("cpa-di-tokens").textContent = integer(stats.matched_tokens);
     document.getElementById("cpa-di-queue").textContent = integer(stats.queue_depth);
+    var dropped = Number(stats.dropped_requests || 0);
+    document.getElementById("cpa-di-dropped").textContent =
+      dropped > 0 ? "已丢弃 " + integer(dropped) + " 条" : "未发生丢弃";
     document.getElementById("cpa-di-storage").textContent = stats.storage_directory || "/data";
     document.getElementById("cpa-di-updated").textContent = stats.updated_at
       ? "统计更新：" + new Date(stats.updated_at).toLocaleString("zh-CN")

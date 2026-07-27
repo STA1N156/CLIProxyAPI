@@ -322,6 +322,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	dataIntegrationStore, errDataIntegration := dataintegration.NewStore("")
 	if errDataIntegration != nil {
 		log.WithError(errDataIntegration).Warn("data integration storage is unavailable")
+	} else {
+		dataIntegrationStore.StartWarmup()
 	}
 
 	engine.Use(corsMiddleware())

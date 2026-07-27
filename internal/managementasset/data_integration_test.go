@@ -29,6 +29,7 @@ func TestInjectDataIntegration(t *testing.T) {
 		[]byte(`value="conversation"`),
 		[]byte(`value="trajectory"`),
 		[]byte(`id="cpa-di-clear"`),
+		[]byte(`id="cpa-di-dropped"`),
 		[]byte(`method: "DELETE"`),
 		[]byte(`confirm: "CLEAR_ALL_DATA"`),
 	} {

@@ -21,6 +21,10 @@ func TestDataIntegrationMiddlewareRecordsAndRestoresBody(t *testing.T) {
 	router := gin.New()
 	router.Use(DataIntegrationMiddleware(store))
 	router.POST("/v1/chat/completions", func(c *gin.Context) {
+		stats, errStats := store.Stats(0, dataintegration.TimeRange{})
+		if errStats != nil || stats.TotalRequests != 0 {
+			t.Errorf("request was evaluated before proxy handler completed: total/error = %d/%v", stats.TotalRequests, errStats)
+		}
 		body, errRead := io.ReadAll(c.Request.Body)
 		if errRead != nil || !strings.Contains(string(body), `"messages"`) {
 			c.Status(http.StatusBadRequest)
