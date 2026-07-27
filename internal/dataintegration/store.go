@@ -424,7 +424,7 @@ func (s *Store) Close(ctx context.Context) error {
 }
 
 // Stats returns the ratio for any selected combination and optional time range.
-// A zero mask matches all stored sessions.
+// A zero mask matches all sessions admitted by the storage requirements.
 func (s *Store) Stats(selectedMask uint8, timeRange TimeRange) (StatsView, error) {
 	if s == nil {
 		return StatsView{}, fmt.Errorf("data integration store is unavailable")
@@ -437,18 +437,21 @@ func (s *Store) Stats(selectedMask uint8, timeRange TimeRange) (StatsView, error
 	}
 	s.maintenanceMu.RLock()
 	defer s.maintenanceMu.RUnlock()
-	counts, tokens, total, updatedAt, errCounts := s.countsForRange(timeRange)
+	counts, tokens, _, updatedAt, errCounts := s.countsForRange(timeRange)
 	if errCounts != nil {
 		return StatsView{}, errCounts
 	}
 
-	matched := matchedForMask(counts, selectedMask)
+	requestedMask := selectedMask &^ storageRequirementMask
+	effectiveMask := requestedMask | storageRequirementMask
+	total := matchedForMask(counts, storageRequirementMask)
+	matched := matchedForMask(counts, effectiveMask)
 	view := StatsView{
 		TotalRequests:     total,
 		MatchedRequests:   matched,
-		MatchedTokens:     matchedForMask(tokens, selectedMask),
+		MatchedTokens:     matchedForMask(tokens, effectiveMask),
 		MatchRate:         percentage(matched, total),
-		SelectedCriteria:  KeysForMask(selectedMask),
+		SelectedCriteria:  KeysForMask(requestedMask),
 		AvailableDownload: matched,
 		StorageDirectory:  filepath.ToSlash(s.root),
 		QueueDepth:        len(s.rawQueue) + len(s.queue),
@@ -463,11 +466,14 @@ func (s *Store) Stats(selectedMask uint8, timeRange TimeRange) (StatsView, error
 		view.To = timeRange.To.UTC().Format(time.RFC3339)
 	}
 	for _, criterion := range Criteria {
-		criterionMatched := matchedForMask(counts, criterion.Bit)
+		if criterion.Bit&storageRequirementMask != 0 {
+			continue
+		}
+		criterionMatched := matchedForMask(counts, criterion.Bit|storageRequirementMask)
 		view.Criteria = append(view.Criteria, CriterionStats{
 			Key:      criterion.Key,
 			Label:    criterion.Label,
-			Selected: selectedMask&criterion.Bit != 0,
+			Selected: requestedMask&criterion.Bit != 0,
 			Matched:  criterionMatched,
 			Rate:     percentage(criterionMatched, total),
 		})
@@ -549,6 +555,8 @@ func (s *Store) WriteZIPWithOptions(
 	if errInit := s.ensureInitialized(); errInit != nil {
 		return errInit
 	}
+	requestedMask := selectedMask &^ storageRequirementMask
+	selectedMask = requestedMask | storageRequirementMask
 	s.maintenanceMu.RLock()
 	defer s.maintenanceMu.RUnlock()
 	if count <= 0 {
@@ -578,7 +586,7 @@ func (s *Store) WriteZIPWithOptions(
 		Count:            count,
 		Format:           options.Format,
 		Layout:           options.Layout,
-		SelectedCriteria: KeysForMask(selectedMask),
+		SelectedCriteria: KeysForMask(requestedMask),
 	}
 	if options.Layout == ExportLayoutContract {
 		manifest.MessageField = options.MessageField

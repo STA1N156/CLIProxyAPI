@@ -25,6 +25,10 @@ func TestStoreRecordsFiltersAndExports(t *testing.T) {
 	if errClose := store.Close(context.Background()); errClose != nil {
 		t.Fatal(errClose)
 	}
+	store.statsMu.Lock()
+	store.stats.Total++
+	store.stats.MaskCounts[0]++
+	store.statsMu.Unlock()
 
 	stats, errStats := store.Stats(evaluation.Mask, TimeRange{})
 	if errStats != nil {
@@ -32,6 +36,9 @@ func TestStoreRecordsFiltersAndExports(t *testing.T) {
 	}
 	if stats.TotalRequests != 1 || stats.MatchedRequests != 1 || stats.MatchedTokens == 0 {
 		t.Fatalf("total/matched/tokens = %d/%d/%d", stats.TotalRequests, stats.MatchedRequests, stats.MatchedTokens)
+	}
+	if len(stats.Criteria) != 4 {
+		t.Fatalf("visible criteria = %d, want 4", len(stats.Criteria))
 	}
 
 	var output bytes.Buffer

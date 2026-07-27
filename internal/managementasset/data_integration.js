@@ -2,8 +2,6 @@
   "use strict";
 
   var criteriaKeys = [
-    "effective_turns",
-    "first_role",
     "tool_call",
     "tool_schema",
     "tool_pairing",
@@ -186,7 +184,7 @@
       '<div class="cpa-di-stat"><span class="cpa-di-label">匹配 Token 总数（B）</span><b id="cpa-di-tokens">--</b></div>' +
       '<div class="cpa-di-stat"><span class="cpa-di-label">后台队列</span><b id="cpa-di-queue">--</b><small id="cpa-di-dropped">未发生丢弃</small></div>' +
       '</div><div class="cpa-di-meta"><span>存储位置：<strong id="cpa-di-storage">/data</strong></span><span id="cpa-di-updated">等待读取统计</span></div></div>' +
-      '<div class="cpa-di-card"><div class="cpa-di-section-head"><div><strong>筛选条件</strong><p class="cpa-di-help">前两项是存储硬门槛；其余已勾选条件按“同时满足”计算。</p></div><span class="cpa-di-badge" id="cpa-di-selected-count">已选 6 项</span></div><div class="cpa-di-form">' +
+      '<div class="cpa-di-card"><div class="cpa-di-section-head"><div><strong>筛选条件</strong><p class="cpa-di-help">这里只统计已通过存储硬门槛的数据；勾选条件按“同时满足”计算。</p></div><span class="cpa-di-badge" id="cpa-di-selected-count">已选 4 项</span></div><div class="cpa-di-form">' +
       '<label class="cpa-di-field">开始时间<input id="cpa-di-from" type="datetime-local"></label>' +
       '<label class="cpa-di-field">结束时间<input id="cpa-di-to" type="datetime-local" step="1"></label><button class="cpa-di-button" id="cpa-di-reset-time">全部时间</button></div>' +
       '<div class="cpa-di-criteria" id="cpa-di-criteria"></div><div class="cpa-di-status" id="cpa-di-filter-status"></div></div>' +
@@ -259,8 +257,6 @@
       var checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.checked = state.selected.has(criterion.key);
-      checkbox.disabled =
-        criterion.key === "effective_turns" || criterion.key === "first_role";
       checkbox.onchange = function () {
         if (checkbox.checked) {
           state.selected.add(criterion.key);
