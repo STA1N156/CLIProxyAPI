@@ -147,6 +147,21 @@ func TestToolSchemaTablePreservesAllDeclaredTools(t *testing.T) {
 	}
 }
 
+func TestToolSchemaTableDropsDefinitionsWithoutParameterSchema(t *testing.T) {
+	table := newToolSchemaTable()
+	table.observeStoredDefinitions([]byte(`{
+		"tools":[
+			{"type":"function","function":{"name":"NoParameters","description":"Cannot be validated"}},
+			{"type":"function","function":{"name":"IncompleteButUseful","parameters":{"type":"object","properties":{}}}}
+		],
+		"messages":[{"role":"user","content":"remember"}]
+	}`), time.Now().UTC())
+	tools, versions := table.counts()
+	if tools != 1 || versions != 1 {
+		t.Fatalf("schema counts = %d/%d, want only the definition with a parameter signature", tools, versions)
+	}
+}
+
 func TestToolSchemaTableKeepsIncompleteDistinctSignatures(t *testing.T) {
 	table := newToolSchemaTable()
 	payload := []byte(`{

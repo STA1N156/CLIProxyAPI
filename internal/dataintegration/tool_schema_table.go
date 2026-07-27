@@ -109,6 +109,10 @@ func (t *toolSchemaTable) load(path string) error {
 			if definitionName != name {
 				continue
 			}
+			schema, hasSchema := firstMap(definition, "parameters", "input_schema", "parametersJsonSchema")
+			if !hasSchema {
+				continue
+			}
 			encoded, hash, errEncode := encodeToolDefinition(definition)
 			if errEncode != nil {
 				continue
@@ -120,7 +124,6 @@ func (t *toolSchemaTable) load(path string) error {
 			}
 			version := versions[hash]
 			if version == nil {
-				schema, _ := firstMap(definition, "parameters", "input_schema", "parametersJsonSchema")
 				version = &toolSchemaVersion{
 					hash:       hash,
 					definition: encoded,
@@ -489,6 +492,10 @@ func (t *toolSchemaTable) observeLocked(definition map[string]any, observedAt ti
 	if name == "" {
 		return false
 	}
+	schema, hasSchema := firstMap(definition, "parameters", "input_schema", "parametersJsonSchema")
+	if !hasSchema {
+		return false
+	}
 	encoded, hash, errEncode := encodeToolDefinition(definition)
 	if errEncode != nil {
 		return false
@@ -501,7 +508,6 @@ func (t *toolSchemaTable) observeLocked(definition map[string]any, observedAt ti
 	version := versions[hash]
 	added := version == nil
 	if version == nil {
-		schema, _ := firstMap(definition, "parameters", "input_schema", "parametersJsonSchema")
 		version = &toolSchemaVersion{
 			hash:       hash,
 			definition: encoded,
@@ -661,6 +667,9 @@ func (t *toolSchemaTable) compactLocked() int {
 	for name, versions := range t.tools {
 		bySignature := make(map[string]*toolSchemaVersion)
 		for _, version := range versions {
+			if version.schema == nil {
+				continue
+			}
 			signature := toolSchemaSignature(version.schema)
 			current := bySignature[signature]
 			if betterToolSchemaVersion(version, current) {
