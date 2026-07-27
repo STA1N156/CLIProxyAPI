@@ -253,8 +253,17 @@
     document.getElementById("cpa-di-dropped").textContent =
       dropped > 0 ? "已丢弃 " + integer(dropped) + " 条" : "未发生丢弃";
     document.getElementById("cpa-di-storage").textContent = stats.storage_directory || "/data";
+    var hasSchemaBreakdown = stats.tool_schema_complete_count !== undefined;
+    var completeTools = hasSchemaBreakdown
+      ? stats.tool_schema_complete_count
+      : stats.tool_schema_count;
+    var completeVersions = hasSchemaBreakdown
+      ? stats.tool_schema_complete_versions
+      : stats.tool_schema_versions;
+    var incompleteTools = Number(stats.tool_schema_incomplete_count || 0);
     document.getElementById("cpa-di-schema-count").textContent =
-      integer(stats.tool_schema_count) + " 个工具 / " + integer(stats.tool_schema_versions) + " 个版本";
+      integer(completeTools) + " 个完整工具 / " + integer(completeVersions) + " 个有效版本" +
+      (incompleteTools > 0 ? "（另保留 " + integer(incompleteTools) + " 个残缺声明）" : "");
     document.getElementById("cpa-di-updated").textContent = stats.updated_at
       ? "统计更新：" + new Date(stats.updated_at).toLocaleString("zh-CN")
       : "统计已更新";
@@ -370,7 +379,7 @@
   async function backfillToolSchemas() {
     if (
       !window.confirm(
-        "确定补齐当前筛选范围内的工具 Schema 吗？\n\n系统只会加入与实际调用参数兼容的完整定义，然后重新统计。"
+        "确定补齐当前筛选范围内的工具 Schema 吗？\n\n系统只补原定义缺失的参数说明，或加入缺失且兼容的真实定义；补齐后会重新校验实际调用参数。"
       )
     ) {
       return;
@@ -396,7 +405,7 @@
           integer(result.promoted_sessions) +
           " 条加入“所有调用工具均有完整 Schema”；仍有 " +
           integer(result.remaining_schema_failures) + " 条不匹配；整理掉 " +
-          integer(result.pruned_schema_versions) + " 个重复或无用版本。",
+          integer(result.pruned_schema_versions) + " 个同签名重复版本。",
         "cpa-di-success"
       );
       await loadStats();
@@ -425,7 +434,11 @@
       state.schemas = registry;
       var select = document.getElementById("cpa-di-schema-select");
       select.innerHTML = '<option value="">新增工具…</option>';
-      Object.keys(registry.tools || {})
+      var toolNames = Object.keys(registry.tools || {});
+      var completeToolCount = 0;
+      var completeVersionCount = 0;
+      var incompleteToolCount = 0;
+      toolNames
         .sort(function (left, right) {
           return left.localeCompare(right);
         })
@@ -434,6 +447,12 @@
           var complete = versions.filter(function (version) {
             return version.contract_schema_complete;
           }).length;
+          completeVersionCount += complete;
+          if (complete > 0) {
+            completeToolCount += 1;
+          } else {
+            incompleteToolCount += 1;
+          }
           var option = document.createElement("option");
           option.value = name;
           option.textContent =
@@ -443,14 +462,14 @@
       select.disabled = false;
       if (selectedName && registry.tools && registry.tools[selectedName]) {
         select.value = selectedName;
-        selectToolSchema();
+          selectToolSchema();
       }
-      var versionCount = Object.keys(registry.tools || {}).reduce(function (total, name) {
-        return total + (((registry.tools[name] || {}).versions || []).length);
-      }, 0);
       setSchemaStatus(
-        "已读取 " + integer(Object.keys(registry.tools || {}).length) + " 个工具、" +
-          integer(versionCount) + " 个版本。",
+        "已读取 " + integer(completeToolCount) + " 个完整工具、" +
+          integer(completeVersionCount) + " 个有效版本" +
+          (incompleteToolCount > 0
+            ? "；另保留 " + integer(incompleteToolCount) + " 个残缺声明。"
+            : "。"),
         "cpa-di-success"
       );
     } catch (error) {
@@ -524,12 +543,12 @@
     if (!file) {
       return;
     }
-    if (file.size > 32 * 1024 * 1024) {
-      setSchemaStatus("工具表不能超过 32 MiB。", "cpa-di-error");
+    if (file.size > 128 * 1024 * 1024) {
+      setSchemaStatus("工具表不能超过 128 MiB。", "cpa-di-error");
       input.value = "";
       return;
     }
-    setSchemaStatus("正在合并完整 Schema…");
+    setSchemaStatus("正在合并全部工具签名…");
     try {
       var headers = requestHeaders();
       headers["Content-Type"] = "application/json";
@@ -548,7 +567,7 @@
         "合并完成：新增 " + integer(result.added_tools) + " 个工具、" +
           integer(result.added_versions) + " 个版本；跳过 " +
           integer(Number(result.skipped_incomplete || 0) + Number(result.skipped_invalid || 0)) +
-          " 个残缺或无效版本。",
+          " 个无效版本。",
         "cpa-di-success"
       );
       loadStats();

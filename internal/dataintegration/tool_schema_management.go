@@ -46,7 +46,7 @@ func (s *Store) ExportToolSchemas() ([]byte, error) {
 	return json.MarshalIndent(s.schemaTable.snapshot(), "", "  ")
 }
 
-// ImportToolSchemas merges complete definitions without replacing existing versions.
+// ImportToolSchemas merges every valid signature without replacing original fields.
 func (s *Store) ImportToolSchemas(payload []byte) (ToolSchemaImportResult, error) {
 	if s == nil {
 		return ToolSchemaImportResult{}, fmt.Errorf("data integration store is unavailable")
@@ -70,7 +70,7 @@ func (s *Store) ImportToolSchemas(payload []byte) (ToolSchemaImportResult, error
 			imported.Version,
 		)
 	}
-	result := s.schemaTable.mergeComplete(imported)
+	result := s.schemaTable.mergeDefinitions(imported)
 	if result.AddedVersions > 0 || result.UpdatedVersions > 0 {
 		if errWrite := s.writeToolSchemas(); errWrite != nil {
 			return ToolSchemaImportResult{}, errWrite
@@ -183,13 +183,18 @@ func (t *toolSchemaTable) persistedLocked(updatedAt time.Time) persistedToolSche
 	return stored
 }
 
-func (t *toolSchemaTable) mergeComplete(imported persistedToolSchemaTable) ToolSchemaImportResult {
+func (t *toolSchemaTable) mergeDefinitions(imported persistedToolSchemaTable) ToolSchemaImportResult {
 	result := ToolSchemaImportResult{}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	beforeTools := len(t.tools)
+	beforeVersions := 0
+	for _, versions := range t.tools {
+		beforeVersions += len(versions)
+	}
+	touched := make(map[string]struct{})
 	for name, set := range imported.Tools {
 		name = strings.TrimSpace(name)
-		addedTool := false
 		for _, candidate := range set.Versions {
 			var definition map[string]any
 			decoder := json.NewDecoder(bytes.NewReader(candidate.Definition))
@@ -206,8 +211,9 @@ func (t *toolSchemaTable) mergeComplete(imported persistedToolSchemaTable) ToolS
 				result.SkippedInvalid++
 				continue
 			}
-			if !completeRawToolDefinition(definition) {
-				result.SkippedIncomplete++
+			schema, hasSchema := firstMap(definition, "parameters", "input_schema", "parametersJsonSchema")
+			if !hasSchema {
+				result.SkippedInvalid++
 				continue
 			}
 			encoded, hash, errEncode := encodeToolDefinition(definition)
@@ -219,19 +225,8 @@ func (t *toolSchemaTable) mergeComplete(imported persistedToolSchemaTable) ToolS
 			if versions == nil {
 				versions = make(map[string]*toolSchemaVersion)
 				t.tools[name] = versions
-				addedTool = true
 			}
 			existing := versions[hash]
-			schema, _ := firstMap(definition, "parameters", "input_schema", "parametersJsonSchema")
-			if existing == nil {
-				signature := toolSchemaSignature(schema)
-				for _, version := range versions {
-					if version.complete && toolSchemaSignature(version.schema) == signature {
-						existing = version
-						break
-					}
-				}
-			}
 			if existing == nil {
 				observed := candidate.ObservedCount
 				if observed == 0 {
@@ -241,13 +236,13 @@ func (t *toolSchemaTable) mergeComplete(imported persistedToolSchemaTable) ToolS
 					hash:       hash,
 					definition: encoded,
 					schema:     schema,
-					complete:   true,
+					complete:   completeRawToolDefinition(definition),
 					observed:   observed,
 					firstSeen:  candidate.FirstSeen,
 					lastSeen:   candidate.LastSeen,
 				}
-				result.AddedVersions++
 				t.dirty = true
+				touched[name] = struct{}{}
 				continue
 			}
 			changed := false
@@ -267,10 +262,24 @@ func (t *toolSchemaTable) mergeComplete(imported persistedToolSchemaTable) ToolS
 				result.UpdatedVersions++
 				t.dirty = true
 			}
+			touched[name] = struct{}{}
 		}
-		if addedTool {
-			result.AddedTools++
-		}
+	}
+	if repaired := t.repairDescriptionsLocked(touched); repaired > 0 {
+		result.UpdatedVersions += repaired
+	}
+	if t.compactLocked() > 0 {
+		t.dirty = true
+	}
+	afterVersions := 0
+	for _, versions := range t.tools {
+		afterVersions += len(versions)
+	}
+	if len(t.tools) > beforeTools {
+		result.AddedTools = len(t.tools) - beforeTools
+	}
+	if afterVersions > beforeVersions {
+		result.AddedVersions = afterVersions - beforeVersions
 	}
 	return result
 }

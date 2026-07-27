@@ -87,16 +87,16 @@ func (h *Handler) ExportDataIntegrationToolSchemas(c *gin.Context) {
 	c.Data(http.StatusOK, "application/json; charset=utf-8", data)
 }
 
-// ImportDataIntegrationToolSchemas non-destructively merges complete definitions.
+// ImportDataIntegrationToolSchemas non-destructively merges every valid signature.
 func (h *Handler) ImportDataIntegrationToolSchemas(c *gin.Context) {
 	if h == nil || h.dataIntegrationStore == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "data integration storage is unavailable"})
 		return
 	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<20)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 128<<20)
 	payload, errRead := io.ReadAll(c.Request.Body)
 	if errRead != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "tool schema registry must be valid JSON and no larger than 32 MiB"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tool schema registry must be valid JSON and no larger than 128 MiB"})
 		return
 	}
 	result, errImport := h.dataIntegrationStore.ImportToolSchemas(payload)

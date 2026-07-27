@@ -21,7 +21,7 @@ import (
 const (
 	toolSchemaTableFileName = "tool-schema-registry.json"
 	toolSchemaTableVersion  = 1
-	toolSetCacheLimit       = 1024
+	toolSetCacheLimit       = 4096
 )
 
 type persistedToolSchemaTable struct {
@@ -137,7 +137,12 @@ func (t *toolSchemaTable) load(path string) error {
 
 	t.mu.Lock()
 	t.tools = loaded
-	t.dirty = t.compactLocked() > 0
+	names := make(map[string]struct{}, len(loaded))
+	for name := range loaded {
+		names[name] = struct{}{}
+	}
+	repaired := t.repairDescriptionsLocked(names)
+	t.dirty = repaired > 0 || t.compactLocked() > 0
 	t.mu.Unlock()
 	return nil
 }
@@ -148,6 +153,32 @@ func (t *toolSchemaTable) observeAndEnrich(payload []byte, observedAt time.Time)
 
 func (t *toolSchemaTable) enrich(payload []byte) ([]byte, error) {
 	return t.processPayload(payload, time.Time{}, false)
+}
+
+func (t *toolSchemaTable) observeStoredDefinitions(payload []byte, observedAt time.Time) {
+	if t == nil {
+		return
+	}
+	fields, _, _ := quickPayloadParts(payload)
+	definitions := decodeToolDefinitions(fields)
+	if len(definitions) == 0 {
+		return
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	t.mu.Lock()
+	names := make(map[string]struct{}, len(definitions))
+	for _, definition := range definitions {
+		if name := toolDefinitionName(definition); name != "" &&
+			t.observeLocked(definition, observedAt.UTC()) {
+			names[name] = struct{}{}
+		}
+	}
+	if t.repairDescriptionsLocked(names) > 0 {
+		t.dirty = true
+	}
+	t.mu.Unlock()
 }
 
 func (t *toolSchemaTable) processPayload(payload []byte, observedAt time.Time, observe bool) ([]byte, error) {
@@ -167,11 +198,27 @@ func (t *toolSchemaTable) processPayload(payload []byte, observedAt time.Time, o
 			observedAt = time.Now().UTC()
 		}
 		t.mu.Lock()
+		observedNames := make(map[string]struct{}, len(definitions))
 		for _, definition := range definitions {
-			t.observeLocked(definition, observedAt.UTC())
+			if name := toolDefinitionName(definition); name != "" &&
+				t.observeLocked(definition, observedAt.UTC()) {
+				observedNames[name] = struct{}{}
+			}
+		}
+		if t.repairDescriptionsLocked(observedNames) > 0 {
+			t.dirty = true
 		}
 		t.mu.Unlock()
 	}
+
+	arguments := calledToolArguments(payload)
+	t.mu.RLock()
+	repairedPayload, errRepair := t.repairPayloadDefinitionsLocked(payload, arguments)
+	t.mu.RUnlock()
+	if errRepair != nil {
+		return nil, fmt.Errorf("encode schema-repaired session: %w", errRepair)
+	}
+	payload = repairedPayload
 
 	missing := make([]string, 0, len(called))
 	for name := range called {
@@ -183,7 +230,6 @@ func (t *toolSchemaTable) processPayload(payload []byte, observedAt time.Time, o
 		return payload, nil
 	}
 
-	arguments := calledToolArguments(payload)
 	var recovered map[string]json.RawMessage
 	t.mu.RLock()
 	for _, name := range missing {
@@ -199,6 +245,7 @@ func (t *toolSchemaTable) processPayload(payload []byte, observedAt time.Time, o
 		return payload, nil
 	}
 
+	toolFields, _, gemini = quickPayloadParts(payload)
 	enriched, errEncode := mergeRecoveredToolDefinitions(payload, toolFields, gemini, recovered)
 	if errEncode != nil {
 		return nil, fmt.Errorf("encode schema-enriched session: %w", errEncode)
@@ -434,17 +481,17 @@ func firstResultString(value gjson.Result, keys ...string) string {
 	return ""
 }
 
-func (t *toolSchemaTable) observeLocked(definition map[string]any, observedAt time.Time) {
+func (t *toolSchemaTable) observeLocked(definition map[string]any, observedAt time.Time) bool {
 	name := firstString(definition, "name")
 	if name == "" {
 		name = lowerString(definition["type"])
 	}
 	if name == "" {
-		return
+		return false
 	}
 	encoded, hash, errEncode := encodeToolDefinition(definition)
 	if errEncode != nil {
-		return
+		return false
 	}
 	versions := t.tools[name]
 	if versions == nil {
@@ -452,6 +499,7 @@ func (t *toolSchemaTable) observeLocked(definition map[string]any, observedAt ti
 		t.tools[name] = versions
 	}
 	version := versions[hash]
+	added := version == nil
 	if version == nil {
 		schema, _ := firstMap(definition, "parameters", "input_schema", "parametersJsonSchema")
 		version = &toolSchemaVersion{
@@ -466,6 +514,7 @@ func (t *toolSchemaTable) observeLocked(definition map[string]any, observedAt ti
 	}
 	version.observed++
 	version.lastSeen = observedAt
+	return added
 }
 
 func (t *toolSchemaTable) bestCompatibleLocked(name string, arguments []map[string]any) json.RawMessage {
@@ -527,6 +576,29 @@ func (t *toolSchemaTable) counts() (int, int) {
 	return len(t.tools), versions
 }
 
+func (t *toolSchemaTable) completeCounts() (int, int) {
+	if t == nil {
+		return 0, 0
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	tools := 0
+	versions := 0
+	for _, toolVersions := range t.tools {
+		complete := false
+		for _, version := range toolVersions {
+			if version.complete {
+				complete = true
+				versions++
+			}
+		}
+		if complete {
+			tools++
+		}
+	}
+	return tools, versions
+}
+
 func (t *toolSchemaTable) isDirty() bool {
 	if t == nil {
 		return false
@@ -541,6 +613,13 @@ func (t *toolSchemaTable) write(path string) error {
 		return nil
 	}
 	t.mu.Lock()
+	names := make(map[string]struct{}, len(t.tools))
+	for name := range t.tools {
+		names[name] = struct{}{}
+	}
+	if t.repairDescriptionsLocked(names) > 0 {
+		t.dirty = true
+	}
 	if t.compactLocked() > 0 {
 		t.dirty = true
 	}
@@ -580,27 +659,17 @@ func (t *toolSchemaTable) compact() int {
 func (t *toolSchemaTable) compactLocked() int {
 	removed := 0
 	for name, versions := range t.tools {
-		completeBySignature := make(map[string]*toolSchemaVersion)
-		var bestIncomplete *toolSchemaVersion
+		bySignature := make(map[string]*toolSchemaVersion)
 		for _, version := range versions {
-			if !version.complete {
-				if betterToolSchemaVersion(version, bestIncomplete) {
-					bestIncomplete = version
-				}
-				continue
-			}
 			signature := toolSchemaSignature(version.schema)
-			if betterToolSchemaVersion(version, completeBySignature[signature]) {
-				completeBySignature[signature] = version
+			current := bySignature[signature]
+			if betterToolSchemaVersion(version, current) {
+				bySignature[signature] = version
 			}
 		}
 		compacted := make(map[string]*toolSchemaVersion)
-		if len(completeBySignature) > 0 {
-			for _, version := range completeBySignature {
-				compacted[version.hash] = version
-			}
-		} else if bestIncomplete != nil {
-			compacted[bestIncomplete.hash] = bestIncomplete
+		for _, version := range bySignature {
+			compacted[version.hash] = version
 		}
 		removed += len(versions) - len(compacted)
 		if len(compacted) == 0 {
@@ -626,7 +695,14 @@ func schemaWithoutAnnotations(value any) any {
 			case "description", "title", "$comment", "examples", "default", "deprecated", "readOnly", "writeOnly":
 				continue
 			}
-			cleaned[key] = schemaWithoutAnnotations(child)
+			cleanedChild := schemaWithoutAnnotations(child)
+			if key == "required" || key == "type" {
+				if list := stringList(cleanedChild); list != nil {
+					sort.Strings(list)
+					cleanedChild = list
+				}
+			}
+			cleaned[key] = cleanedChild
 		}
 		return cleaned
 	case []any:
@@ -640,9 +716,28 @@ func schemaWithoutAnnotations(value any) any {
 	}
 }
 
+func stringList(value any) []string {
+	raw, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, len(raw))
+	for index, item := range raw {
+		text, okText := item.(string)
+		if !okText {
+			return nil
+		}
+		result[index] = text
+	}
+	return result
+}
+
 func betterToolSchemaVersion(candidate, current *toolSchemaVersion) bool {
 	if candidate == nil {
 		return false
+	}
+	if current != nil && candidate.complete != current.complete {
+		return candidate.complete
 	}
 	if current == nil || candidate.observed != current.observed {
 		return current == nil || candidate.observed > current.observed

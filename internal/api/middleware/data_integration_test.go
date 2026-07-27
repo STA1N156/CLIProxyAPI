@@ -29,7 +29,16 @@ func TestDataIntegrationMiddlewareRecordsAndRestoresBody(t *testing.T) {
 		c.Status(http.StatusOK)
 	})
 
-	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`))
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"messages":[
+			{"role":"user","content":"first"},
+			{"role":"assistant","content":"ok"},
+			{"role":"user","content":"second"},
+			{"role":"assistant","content":"done"}
+		]}`),
+	)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {

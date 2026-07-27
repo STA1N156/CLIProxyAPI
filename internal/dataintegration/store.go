@@ -108,21 +108,24 @@ type CriterionStats struct {
 
 // StatsView is the management-friendly statistics snapshot.
 type StatsView struct {
-	TotalRequests      uint64           `json:"total_requests"`
-	MatchedRequests    uint64           `json:"matched_requests"`
-	MatchedTokens      uint64           `json:"matched_tokens"`
-	MatchRate          float64          `json:"match_rate"`
-	SelectedCriteria   []string         `json:"selected_criteria"`
-	AvailableDownload  uint64           `json:"available_download"`
-	StorageDirectory   string           `json:"storage_directory"`
-	QueueDepth         int              `json:"queue_depth"`
-	DroppedRequests    uint64           `json:"dropped_requests"`
-	ToolSchemaCount    int              `json:"tool_schema_count"`
-	ToolSchemaVersions int              `json:"tool_schema_versions"`
-	From               string           `json:"from,omitempty"`
-	To                 string           `json:"to,omitempty"`
-	UpdatedAt          time.Time        `json:"updated_at"`
-	Criteria           []CriterionStats `json:"criteria"`
+	TotalRequests          uint64           `json:"total_requests"`
+	MatchedRequests        uint64           `json:"matched_requests"`
+	MatchedTokens          uint64           `json:"matched_tokens"`
+	MatchRate              float64          `json:"match_rate"`
+	SelectedCriteria       []string         `json:"selected_criteria"`
+	AvailableDownload      uint64           `json:"available_download"`
+	StorageDirectory       string           `json:"storage_directory"`
+	QueueDepth             int              `json:"queue_depth"`
+	DroppedRequests        uint64           `json:"dropped_requests"`
+	ToolSchemaCount        int              `json:"tool_schema_count"`
+	ToolSchemaVersions     int              `json:"tool_schema_versions"`
+	CompleteToolSchemas    int              `json:"tool_schema_complete_count"`
+	CompleteSchemaVersions int              `json:"tool_schema_complete_versions"`
+	IncompleteToolSchemas  int              `json:"tool_schema_incomplete_count"`
+	From                   string           `json:"from,omitempty"`
+	To                     string           `json:"to,omitempty"`
+	UpdatedAt              time.Time        `json:"updated_at"`
+	Criteria               []CriterionStats `json:"criteria"`
 }
 
 // ClearResult describes a completed cleanup.
@@ -473,6 +476,8 @@ func (s *Store) Stats(selectedMask uint8, timeRange TimeRange) (StatsView, error
 		Criteria:          make([]CriterionStats, 0, len(Criteria)),
 	}
 	view.ToolSchemaCount, view.ToolSchemaVersions = s.schemaTable.counts()
+	view.CompleteToolSchemas, view.CompleteSchemaVersions = s.schemaTable.completeCounts()
+	view.IncompleteToolSchemas = view.ToolSchemaCount - view.CompleteToolSchemas
 	if timeRange.From != nil {
 		view.From = timeRange.From.UTC().Format(time.RFC3339)
 	}

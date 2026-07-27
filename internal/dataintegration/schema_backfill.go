@@ -103,6 +103,16 @@ func (s *Store) backfillToolSchemas(
 		return result, errShards
 	}
 	for _, path := range shards {
+		if errObserve := s.observeStoredToolSchemas(path); errObserve != nil {
+			return result, errObserve
+		}
+	}
+	if s.schemaTable.isDirty() {
+		if errWrite := s.writeToolSchemas(); errWrite != nil {
+			return result, errWrite
+		}
+	}
+	for _, path := range shards {
 		if !shardMayOverlap(path, timeRange) {
 			continue
 		}
@@ -121,6 +131,31 @@ func (s *Store) backfillToolSchemas(
 		return result, errRebuild
 	}
 	return result, nil
+}
+
+func (s *Store) observeStoredToolSchemas(path string) error {
+	source, errOpen := os.Open(path)
+	if errOpen != nil {
+		return fmt.Errorf("open session shard for schema scan: %w", errOpen)
+	}
+	defer source.Close()
+
+	reader := bufio.NewReaderSize(source, 256<<10)
+	for {
+		line, errRead := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			var record StoredRecord
+			if json.Unmarshal(line, &record) == nil && json.Valid(record.Payload) {
+				s.schemaTable.observeStoredDefinitions(record.Payload, record.CapturedAt)
+			}
+		}
+		if errors.Is(errRead, io.EOF) {
+			return nil
+		}
+		if errRead != nil {
+			return fmt.Errorf("read session shard for schema scan: %w", errRead)
+		}
+	}
 }
 
 func (s *Store) backfillToolSchemaShard(

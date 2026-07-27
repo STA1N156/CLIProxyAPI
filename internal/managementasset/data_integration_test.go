@@ -37,6 +37,8 @@ func TestInjectDataIntegration(t *testing.T) {
 		[]byte(`/data-integration/tool-schemas/backfill`),
 		[]byte(`/data-integration/tool-schemas/import`),
 		[]byte(`method: "PUT"`),
+		[]byte(`tool_schema_complete_count`),
+		[]byte(`个完整工具`),
 	} {
 		if !bytes.Contains(DataIntegrationScript(), control) {
 			t.Fatalf("data integration script is missing %s", control)
