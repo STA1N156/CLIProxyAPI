@@ -2,8 +2,10 @@ package management
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -63,6 +65,104 @@ func (h *Handler) ClearDataIntegration(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// ExportDataIntegrationToolSchemas returns the complete local tool registry.
+func (h *Handler) ExportDataIntegrationToolSchemas(c *gin.Context) {
+	if h == nil || h.dataIntegrationStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "data integration storage is unavailable"})
+		return
+	}
+	data, errExport := h.dataIntegrationStore.ExportToolSchemas()
+	if errExport != nil {
+		dataIntegrationSchemaError(c, errExport)
+		return
+	}
+	if c.Query("download") == "1" {
+		fileName := fmt.Sprintf("tool-schema-registry-%s.json", time.Now().UTC().Format("20060102-150405"))
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Data(http.StatusOK, "application/json; charset=utf-8", data)
+}
+
+// ImportDataIntegrationToolSchemas non-destructively merges complete definitions.
+func (h *Handler) ImportDataIntegrationToolSchemas(c *gin.Context) {
+	if h == nil || h.dataIntegrationStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "data integration storage is unavailable"})
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<20)
+	payload, errRead := io.ReadAll(c.Request.Body)
+	if errRead != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tool schema registry must be valid JSON and no larger than 32 MiB"})
+		return
+	}
+	result, errImport := h.dataIntegrationStore.ImportToolSchemas(payload)
+	if errImport != nil {
+		dataIntegrationSchemaError(c, errImport)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// PutDataIntegrationToolSchema saves one complete definition as a new version.
+func (h *Handler) PutDataIntegrationToolSchema(c *gin.Context) {
+	if h == nil || h.dataIntegrationStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "data integration storage is unavailable"})
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 2<<20)
+	var request struct {
+		Definition json.RawMessage `json:"definition"`
+	}
+	if errBind := c.ShouldBindJSON(&request); errBind != nil || len(request.Definition) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "definition must be a JSON object and no larger than 2 MiB"})
+		return
+	}
+	result, errPut := h.dataIntegrationStore.PutToolSchema(c.Param("name"), request.Definition)
+	if errPut != nil {
+		dataIntegrationSchemaError(c, errPut)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// BackfillDataIntegrationToolSchemas persists compatible missing definitions
+// into sessions matching the current filters and refreshes their statistics.
+func (h *Handler) BackfillDataIntegrationToolSchemas(c *gin.Context) {
+	if h == nil || h.dataIntegrationStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "data integration storage is unavailable"})
+		return
+	}
+	mask, errMask := dataintegration.MaskForKeys(c.QueryArray("criteria"))
+	if errMask != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errMask.Error()})
+		return
+	}
+	timeRange, errRange := dataIntegrationTimeRange(c)
+	if errRange != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errRange.Error()})
+		return
+	}
+	result, errBackfill := h.dataIntegrationStore.BackfillToolSchemas(c.Request.Context(), mask, timeRange)
+	if errBackfill != nil {
+		dataIntegrationSchemaError(c, errBackfill)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func dataIntegrationSchemaError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, dataintegration.ErrInvalidToolSchema):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	case errors.Is(err, dataintegration.ErrInitializing):
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "data integration storage is initializing"})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	}
 }
 
 // DownloadDataIntegrationZIP streams matching sessions to the administrator's browser.

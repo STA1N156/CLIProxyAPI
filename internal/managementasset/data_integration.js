@@ -13,6 +13,7 @@
     authValue: "",
     selected: new Set(criteriaKeys),
     stats: null,
+    schemas: null,
     statsController: null,
   };
 
@@ -159,6 +160,7 @@
       ".cpa-di-check input{margin-top:3px;accent-color:#4f46e5}.cpa-di-check small{display:block;color:#667085;margin-top:5px}" +
       ".cpa-di-form{display:flex;gap:12px;align-items:end;flex-wrap:wrap}.cpa-di-field{display:flex;flex:1 1 155px;max-width:240px;flex-direction:column;gap:7px;color:#475467;font-size:13px}" +
       ".cpa-di-field input,.cpa-di-field select{width:100%;min-width:0;border:1px solid #d0d5dd;border-radius:10px;background:#fff;padding:10px 11px;font:inherit;color:#172033;outline:none}.cpa-di-field input:focus,.cpa-di-field select:focus{border-color:#818cf8;box-shadow:0 0 0 3px rgba(99,102,241,.12)}" +
+      ".cpa-di-schema-editor{display:block;margin-top:14px;color:#475467;font-size:13px}.cpa-di-schema-editor textarea{display:block;width:100%;min-height:220px;margin-top:7px;border:1px solid #d0d5dd;border-radius:10px;padding:12px;background:#101828;color:#f2f4f7;font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical;outline:none}.cpa-di-schema-editor textarea:focus{border-color:#818cf8;box-shadow:0 0 0 3px rgba(99,102,241,.12)}.cpa-di-schema-actions{display:flex;gap:9px;flex-wrap:wrap}.cpa-di-file{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}" +
       ".cpa-di-primary{border:0;border-radius:10px;background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;padding:11px 18px;font:inherit;font-weight:700;cursor:pointer;box-shadow:0 7px 18px rgba(79,70,229,.2)}.cpa-di-primary:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}" +
       ".cpa-di-status{min-height:22px;margin-top:13px;color:#667085;font-size:13px}.cpa-di-error{color:#b42318}.cpa-di-success{color:#067647}" +
       ".cpa-di-danger{display:flex;align-items:center;justify-content:space-between;gap:18px;border-color:#fecdca;background:#fffafa}.cpa-di-danger strong{color:#b42318}.cpa-di-danger p{margin:5px 0 0;color:#7a271a;font-size:13px}.cpa-di-danger-button{border:1px solid #f04438;border-radius:10px;background:#fff;color:#b42318;padding:10px 15px;font:inherit;font-weight:700;cursor:pointer;white-space:nowrap}.cpa-di-danger-button:hover{background:#fff1f0}.cpa-di-danger-button:disabled{opacity:.45;cursor:not-allowed}" +
@@ -188,12 +190,15 @@
       '<label class="cpa-di-field">开始时间<input id="cpa-di-from" type="datetime-local"></label>' +
       '<label class="cpa-di-field">结束时间<input id="cpa-di-to" type="datetime-local" step="1"></label><button class="cpa-di-button" id="cpa-di-reset-time">全部时间</button></div>' +
       '<div class="cpa-di-criteria" id="cpa-di-criteria"></div><div class="cpa-di-status" id="cpa-di-filter-status"></div></div>' +
-      '<div class="cpa-di-card"><div class="cpa-di-section-head"><div><strong>打包下载</strong><p class="cpa-di-help">下载内容是工具定义补齐后通过筛选的 JSON，每条单独保存并统一打包成 ZIP。</p></div></div><div class="cpa-di-form">' +
+      '<div class="cpa-di-card"><div class="cpa-di-section-head"><div><strong>打包下载</strong><p class="cpa-di-help">只下载已提前补齐并通过筛选的 JSON；下载过程不再临时修改数据。</p></div></div><div class="cpa-di-form">' +
       '<label class="cpa-di-field">下载条数<input id="cpa-di-count" type="number" min="1" value="1"></label>' +
       '<label class="cpa-di-field">单条文件格式<select id="cpa-di-format"><option value="json">JSON（每条一个 .json）</option><option value="jsonl">JSONL（每条一个 .jsonl）</option></select></label>' +
       '<label class="cpa-di-field">导出结构<select id="cpa-di-layout"><option value="raw">原始格式</option><option value="contract">合同标准格式</option></select></label>' +
       '<label class="cpa-di-field" id="cpa-di-message-field-wrap" style="display:none">消息序列字段<select id="cpa-di-message-field"><option value="messages">messages</option><option value="conversation">conversation</option><option value="trajectory">trajectory</option></select></label>' +
       '<button class="cpa-di-button" id="cpa-di-all-count">全部条数</button><button class="cpa-di-primary" id="cpa-di-download">下载 ZIP</button></div><div class="cpa-di-status" id="cpa-di-download-status"></div></div>' +
+      '<div class="cpa-di-card"><div class="cpa-di-section-head"><div><strong>工具 Schema 管理</strong><p class="cpa-di-help">手动读取，不影响统计和代理请求。补齐会按实际调用参数选择兼容版本，写回当前筛选数据并刷新统计。</p></div><div class="cpa-di-schema-actions"><button class="cpa-di-button" id="cpa-di-schema-backfill">补齐当前筛选工具</button><button class="cpa-di-button" id="cpa-di-schema-load">读取工具表</button><button class="cpa-di-button" id="cpa-di-schema-export">导出 JSON</button><label class="cpa-di-button" for="cpa-di-schema-import">导入合并</label><input class="cpa-di-file" id="cpa-di-schema-import" type="file" accept=".json,application/json"></div></div>' +
+      '<div class="cpa-di-form"><label class="cpa-di-field">已有工具<select id="cpa-di-schema-select" disabled><option value="">新增工具…</option></select></label><label class="cpa-di-field">工具名称<input id="cpa-di-schema-name" type="text" placeholder="例如 Read"></label><button class="cpa-di-primary" id="cpa-di-schema-save">保存完整版本</button></div>' +
+      '<label class="cpa-di-schema-editor">工具定义 JSON<textarea id="cpa-di-schema-definition" spellcheck="false" placeholder=\'{\"name\":\"Read\",\"description\":\"读取文件\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}\'></textarea></label><div class="cpa-di-status" id="cpa-di-schema-status">工具表尚未读取。</div></div>' +
       '<div class="cpa-di-card cpa-di-danger"><div><strong>清理已存数据</strong><p>永久删除数据整合的全部 session 与统计；工具 Schema 表会保留，后续数据仍可自动补齐。</p><div class="cpa-di-status" id="cpa-di-clear-status"></div></div><button class="cpa-di-danger-button" id="cpa-di-clear">清理全部数据</button></div>' +
       "</div>";
     document.body.appendChild(overlay);
@@ -224,6 +229,12 @@
       }
     };
     document.getElementById("cpa-di-download").onclick = downloadZIP;
+    document.getElementById("cpa-di-schema-backfill").onclick = backfillToolSchemas;
+    document.getElementById("cpa-di-schema-load").onclick = loadToolSchemas;
+    document.getElementById("cpa-di-schema-export").onclick = exportToolSchemas;
+    document.getElementById("cpa-di-schema-import").onchange = importToolSchemas;
+    document.getElementById("cpa-di-schema-select").onchange = selectToolSchema;
+    document.getElementById("cpa-di-schema-save").onclick = saveToolSchema;
     document.getElementById("cpa-di-clear").onclick = clearData;
     return overlay;
   }
@@ -290,6 +301,8 @@
     }
     document.getElementById("cpa-di-download").disabled = available === 0;
     document.getElementById("cpa-di-all-count").disabled = available === 0;
+    document.getElementById("cpa-di-schema-backfill").disabled =
+      Number(stats.total_requests || 0) === 0;
     document.getElementById("cpa-di-clear").disabled = Number(stats.total_requests || 0) === 0;
     document.getElementById("cpa-di-filter-status").textContent =
       "当前满足 " +
@@ -342,6 +355,253 @@
       if (state.statsController === controller) {
         state.statsController = null;
       }
+    }
+  }
+
+  function setSchemaStatus(message, className) {
+    var status = document.getElementById("cpa-di-schema-status");
+    if (!status) {
+      return;
+    }
+    status.textContent = message;
+    status.className = "cpa-di-status" + (className ? " " + className : "");
+  }
+
+  async function backfillToolSchemas() {
+    if (
+      !window.confirm(
+        "确定补齐当前筛选范围内的工具 Schema 吗？\n\n系统只会加入与实际调用参数兼容的完整定义，然后重新统计。"
+      )
+    ) {
+      return;
+    }
+    var button = document.getElementById("cpa-di-schema-backfill");
+    button.disabled = true;
+    setSchemaStatus("正在补齐并重新统计，请勿重复点击…");
+    try {
+      var response = await fetch(
+        state.base + "/data-integration/tool-schemas/backfill?" + queryString(false),
+        {
+          method: "POST",
+          headers: requestHeaders(),
+          cache: "no-store",
+        }
+      );
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      var result = await response.json();
+      setSchemaStatus(
+        "补齐完成：新增 " + integer(result.added_definitions) + " 个定义，" +
+          integer(result.promoted_sessions) +
+          " 条加入“所有调用工具均有完整 Schema”；仍有 " +
+          integer(result.remaining_schema_failures) + " 条不匹配；整理掉 " +
+          integer(result.pruned_schema_versions) + " 个重复或无用版本。",
+        "cpa-di-success"
+      );
+      await loadStats();
+    } catch (error) {
+      setSchemaStatus(error && error.message ? error.message : "补齐失败", "cpa-di-error");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function loadToolSchemas(selectedName) {
+    var button = document.getElementById("cpa-di-schema-load");
+    if (button) {
+      button.disabled = true;
+    }
+    setSchemaStatus("正在读取工具表…");
+    try {
+      var response = await fetch(state.base + "/data-integration/tool-schemas", {
+        headers: requestHeaders(),
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      var registry = await response.json();
+      state.schemas = registry;
+      var select = document.getElementById("cpa-di-schema-select");
+      select.innerHTML = '<option value="">新增工具…</option>';
+      Object.keys(registry.tools || {})
+        .sort(function (left, right) {
+          return left.localeCompare(right);
+        })
+        .forEach(function (name) {
+          var versions = (registry.tools[name] && registry.tools[name].versions) || [];
+          var complete = versions.filter(function (version) {
+            return version.contract_schema_complete;
+          }).length;
+          var option = document.createElement("option");
+          option.value = name;
+          option.textContent =
+            name + "（" + versions.length + " 版本，" + complete + " 个完整）";
+          select.appendChild(option);
+        });
+      select.disabled = false;
+      if (selectedName && registry.tools && registry.tools[selectedName]) {
+        select.value = selectedName;
+        selectToolSchema();
+      }
+      var versionCount = Object.keys(registry.tools || {}).reduce(function (total, name) {
+        return total + (((registry.tools[name] || {}).versions || []).length);
+      }, 0);
+      setSchemaStatus(
+        "已读取 " + integer(Object.keys(registry.tools || {}).length) + " 个工具、" +
+          integer(versionCount) + " 个版本。",
+        "cpa-di-success"
+      );
+    } catch (error) {
+      setSchemaStatus(error && error.message ? error.message : "读取工具表失败", "cpa-di-error");
+    } finally {
+      if (button) {
+        button.disabled = false;
+      }
+    }
+  }
+
+  function selectToolSchema() {
+    var select = document.getElementById("cpa-di-schema-select");
+    var name = select ? select.value : "";
+    var nameInput = document.getElementById("cpa-di-schema-name");
+    var editor = document.getElementById("cpa-di-schema-definition");
+    nameInput.value = name;
+    if (!name || !state.schemas || !state.schemas.tools || !state.schemas.tools[name]) {
+      editor.value = name
+        ? ""
+        : '{\n  "name": "",\n  "description": "",\n  "parameters": {\n    "type": "object",\n    "properties": {}\n  }\n}';
+      return;
+    }
+    var versions = (state.schemas.tools[name].versions || []).slice();
+    versions.sort(function (left, right) {
+      var completeDifference =
+        Number(Boolean(right.contract_schema_complete)) -
+        Number(Boolean(left.contract_schema_complete));
+      if (completeDifference) {
+        return completeDifference;
+      }
+      return Number(right.observed_count || 0) - Number(left.observed_count || 0);
+    });
+    editor.value = versions.length ? JSON.stringify(versions[0].definition, null, 2) : "";
+  }
+
+  async function exportToolSchemas() {
+    var button = document.getElementById("cpa-di-schema-export");
+    button.disabled = true;
+    setSchemaStatus("正在导出工具表…");
+    try {
+      var response = await fetch(state.base + "/data-integration/tool-schemas?download=1", {
+        headers: requestHeaders(),
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      var blob = await response.blob();
+      var disposition = response.headers.get("Content-Disposition") || "";
+      var match = disposition.match(/filename="?([^";]+)"?/i);
+      var link = document.createElement("a");
+      var url = URL.createObjectURL(blob);
+      link.href = url;
+      link.download = match ? match[1] : "tool-schema-registry.json";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setSchemaStatus("工具表导出已开始。", "cpa-di-success");
+    } catch (error) {
+      setSchemaStatus(error && error.message ? error.message : "导出失败", "cpa-di-error");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function importToolSchemas(event) {
+    var input = event.target;
+    var file = input.files && input.files[0];
+    if (!file) {
+      return;
+    }
+    if (file.size > 32 * 1024 * 1024) {
+      setSchemaStatus("工具表不能超过 32 MiB。", "cpa-di-error");
+      input.value = "";
+      return;
+    }
+    setSchemaStatus("正在合并完整 Schema…");
+    try {
+      var headers = requestHeaders();
+      headers["Content-Type"] = "application/json";
+      var response = await fetch(state.base + "/data-integration/tool-schemas/import", {
+        method: "POST",
+        headers: headers,
+        body: await file.text(),
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      var result = await response.json();
+      await loadToolSchemas();
+      setSchemaStatus(
+        "合并完成：新增 " + integer(result.added_tools) + " 个工具、" +
+          integer(result.added_versions) + " 个版本；跳过 " +
+          integer(Number(result.skipped_incomplete || 0) + Number(result.skipped_invalid || 0)) +
+          " 个残缺或无效版本。",
+        "cpa-di-success"
+      );
+      loadStats();
+    } catch (error) {
+      setSchemaStatus(error && error.message ? error.message : "导入失败", "cpa-di-error");
+    } finally {
+      input.value = "";
+    }
+  }
+
+  async function saveToolSchema() {
+    var button = document.getElementById("cpa-di-schema-save");
+    var name = document.getElementById("cpa-di-schema-name").value.trim();
+    var text = document.getElementById("cpa-di-schema-definition").value.trim();
+    if (!name || !text) {
+      setSchemaStatus("请填写工具名称和完整定义。", "cpa-di-error");
+      return;
+    }
+    var definition;
+    try {
+      definition = JSON.parse(text);
+    } catch (_) {
+      setSchemaStatus("工具定义不是有效 JSON。", "cpa-di-error");
+      return;
+    }
+    button.disabled = true;
+    setSchemaStatus("正在保存完整版本…");
+    try {
+      var headers = requestHeaders();
+      headers["Content-Type"] = "application/json";
+      var response = await fetch(
+        state.base + "/data-integration/tool-schemas/" + encodeURIComponent(name),
+        {
+          method: "PUT",
+          headers: headers,
+          body: JSON.stringify({ definition: definition }),
+          cache: "no-store",
+        }
+      );
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      var result = await response.json();
+      await loadToolSchemas(name);
+      setSchemaStatus(
+        result.added ? "完整 Schema 已保存为新版本。" : "这个完整版本已经存在，无需重复保存。",
+        "cpa-di-success"
+      );
+      loadStats();
+    } catch (error) {
+      setSchemaStatus(error && error.message ? error.message : "保存失败", "cpa-di-error");
+    } finally {
+      button.disabled = false;
     }
   }
 

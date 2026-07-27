@@ -2,6 +2,7 @@ package dataintegration
 
 import (
 	"encoding/json"
+	"strconv"
 	"testing"
 )
 
@@ -261,6 +262,88 @@ func TestEvaluateRejectsAmbiguousToolNames(t *testing.T) {
 	}
 	if evaluation.Mask&bitFor(CriterionToolSchema) != 0 {
 		t.Fatalf("ambiguous tool name must fail schema validation")
+	}
+}
+
+func TestEvaluateRequiresArgumentsToMatchCompleteSchema(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		tool       string
+		arguments  string
+		parameters string
+	}{
+		{
+			name:       "TodoWrite wrong field",
+			tool:       "TodoWrite",
+			arguments:  `{"items":[]}`,
+			parameters: `{"type":"object","properties":{"todos":{"type":"array","description":"Todo items","items":{"type":"string"}}},"required":["todos"]}`,
+		},
+		{
+			name:       "Skill wrong field",
+			tool:       "Skill",
+			arguments:  `{"skill":"documents"}`,
+			parameters: `{"type":"object","properties":{"command":{"type":"string","description":"Skill command"}},"required":["command"]}`,
+		},
+		{
+			name:       "Write missing required field",
+			tool:       "Write",
+			arguments:  `{"path":"file.txt"}`,
+			parameters: `{"type":"object","properties":{"path":{"type":"string","description":"File path"},"content":{"type":"string","description":"File content"}},"required":["path","content"]}`,
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			payload := []byte(`{
+				"tools":[{"type":"function","function":{"name":"` + test.tool + `","description":"Run tool","parameters":` + test.parameters + `}}],
+				"messages":[
+					{"role":"user","content":"run"},
+					{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"` + test.tool + `","arguments":` + strconv.Quote(test.arguments) + `}}]},
+					{"role":"tool","tool_call_id":"call_1","content":"ok"}
+				]
+			}`)
+			evaluation, errEvaluate := Evaluate(payload)
+			if errEvaluate != nil {
+				t.Fatalf("Evaluate() error = %v", errEvaluate)
+			}
+			if evaluation.Mask&bitFor(CriterionToolSchema) != 0 {
+				t.Fatal("arguments that do not match the schema must fail")
+			}
+		})
+	}
+}
+
+func TestEvaluateRequiresNestedSchemaDetails(t *testing.T) {
+	t.Parallel()
+	payload := []byte(`{
+		"tools":[{"type":"function","function":{
+			"name":"TodoWrite",
+			"description":"Update todos",
+			"parameters":{
+				"type":"object",
+				"properties":{
+					"todos":{
+						"type":"array",
+						"description":"Todo items",
+						"items":{"type":"object","properties":{"content":{"type":"string"}}}
+					}
+				}
+			}
+		}}],
+		"messages":[
+			{"role":"user","content":"run"},
+			{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"TodoWrite","arguments":"{\"todos\":[]}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"ok"}
+		]
+	}`)
+	evaluation, errEvaluate := Evaluate(payload)
+	if errEvaluate != nil {
+		t.Fatalf("Evaluate() error = %v", errEvaluate)
+	}
+	if evaluation.Mask&bitFor(CriterionToolSchema) != 0 {
+		t.Fatal("nested properties without descriptions must fail completeness")
 	}
 }
 

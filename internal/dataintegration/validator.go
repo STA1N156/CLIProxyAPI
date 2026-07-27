@@ -12,8 +12,8 @@ const (
 	criterionCount         = 6
 	minimumEffectiveTurns  = 2
 	storageRequirementMask = uint8(1<<0 | 1<<1)
-	validatorVersion       = 3
-	minValidatorVersion    = 2
+	validatorVersion       = 4
+	minValidatorVersion    = 4
 )
 
 const (
@@ -68,6 +68,7 @@ type normalizedMessage struct {
 type toolCall struct {
 	id         string
 	name       string
+	arguments  map[string]any
 	structured bool
 }
 
@@ -78,6 +79,7 @@ type toolResult struct {
 
 type toolDefinition struct {
 	name     string
+	schema   map[string]any
 	complete bool
 }
 
@@ -238,10 +240,12 @@ func extractToolCalls(raw map[string]any) []toolCall {
 			}
 		}
 		if id != "" || name != "" {
+			normalizedArguments, structured := normalizeToolArguments(arguments, hasArguments)
 			calls = append(calls, toolCall{
 				id:         id,
 				name:       name,
-				structured: name != "" && validToolArguments(arguments, hasArguments),
+				arguments:  normalizedArguments,
+				structured: name != "" && structured,
 			})
 		}
 	}
@@ -262,10 +266,12 @@ func extractToolCalls(raw map[string]any) []toolCall {
 		appendCall(raw)
 	} else if strings.HasSuffix(messageType, "_call") && messageType != "function_call_output" {
 		arguments, hasArguments := firstValue(raw, "arguments", "args", "input", "parameters")
+		normalizedArguments, structured := normalizeToolArguments(arguments, hasArguments)
 		calls = append(calls, toolCall{
 			id:         firstString(raw, "id", "call_id"),
 			name:       strings.TrimSuffix(messageType, "_call"),
-			structured: validToolArguments(arguments, hasArguments),
+			arguments:  normalizedArguments,
+			structured: structured,
 		})
 	}
 
@@ -291,19 +297,22 @@ func extractToolCalls(raw map[string]any) []toolCall {
 	return calls
 }
 
-func validToolArguments(value any, exists bool) bool {
+func normalizeToolArguments(value any, exists bool) (map[string]any, bool) {
 	if !exists {
-		return false
+		return nil, false
 	}
 	switch typed := value.(type) {
 	case map[string]any:
-		return true
+		return typed, true
 	case string:
 		var arguments map[string]any
-		return json.Unmarshal([]byte(typed), &arguments) == nil && arguments != nil
-	default:
-		return false
+		decoder := json.NewDecoder(strings.NewReader(typed))
+		decoder.UseNumber()
+		if decoder.Decode(&arguments) == nil && arguments != nil {
+			return arguments, true
+		}
 	}
+	return nil, false
 }
 
 func extractToolResults(raw map[string]any) []toolResult {
@@ -389,6 +398,7 @@ func addToolDefinition(definitions map[string]toolDefinition, raw map[string]any
 	schema, okSchema := firstMap(raw, "parameters", "input_schema", "parametersJsonSchema")
 	definitions[name] = toolDefinition{
 		name:     name,
+		schema:   schema,
 		complete: semanticToolName(name) && description != "" && okSchema && completeParameterSchema(schema),
 	}
 }
@@ -411,8 +421,7 @@ func semanticToolName(name string) bool {
 }
 
 func completeParameterSchema(schema map[string]any) bool {
-	schemaType := strings.ToLower(firstString(schema, "type"))
-	if schemaType != "object" {
+	if !schemaAllowsType(schema, "object") {
 		return false
 	}
 	properties, ok := schema["properties"].(map[string]any)
@@ -421,23 +430,88 @@ func completeParameterSchema(schema map[string]any) bool {
 	}
 	for _, rawProperty := range properties {
 		property, okProperty := rawProperty.(map[string]any)
-		if !okProperty || firstString(property, "description") == "" || !propertyHasType(property) {
+		if !okProperty || firstString(property, "description") == "" || !completeSchemaNode(property) {
 			return false
 		}
+	}
+	if required, exists := schema["required"]; exists && !validRequiredList(required, properties) {
+		return false
 	}
 	return true
 }
 
-func propertyHasType(property map[string]any) bool {
-	if firstString(property, "type") != "" {
+func completeSchemaNode(schema map[string]any) bool {
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		raw, exists := schema[key]
+		if !exists {
+			continue
+		}
+		options, ok := raw.([]any)
+		if !ok || len(options) == 0 {
+			return false
+		}
+		for _, option := range options {
+			optionMap, okOption := option.(map[string]any)
+			if !okOption || !completeSchemaNode(optionMap) {
+				return false
+			}
+		}
 		return true
 	}
-	for _, key := range []string{"anyOf", "oneOf", "allOf", "$ref", "enum"} {
-		if _, exists := property[key]; exists {
+	if firstString(schema, "$ref") != "" {
+		return true
+	}
+	if rawEnum, exists := schema["enum"]; exists {
+		values, ok := rawEnum.([]any)
+		return ok && len(values) > 0
+	}
+	schemaType := strings.ToLower(firstString(schema, "type"))
+	switch schemaType {
+	case "string", "number", "integer", "boolean", "null":
+		return true
+	case "array":
+		items, ok := schema["items"].(map[string]any)
+		return ok && completeSchemaNode(items)
+	case "object":
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			return false
+		}
+		for _, rawProperty := range properties {
+			property, okProperty := rawProperty.(map[string]any)
+			if !okProperty || firstString(property, "description") == "" || !completeSchemaNode(property) {
+				return false
+			}
+		}
+		return schema["required"] == nil || validRequiredList(schema["required"], properties)
+	default:
+		if types, ok := schema["type"].([]any); ok && len(types) > 0 {
+			for _, rawType := range types {
+				if _, okType := rawType.(string); !okType {
+					return false
+				}
+			}
 			return true
 		}
 	}
 	return false
+}
+
+func validRequiredList(raw any, properties map[string]any) bool {
+	required, ok := raw.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range required {
+		name, okName := item.(string)
+		if !okName || strings.TrimSpace(name) == "" {
+			return false
+		}
+		if _, exists := properties[name]; !exists {
+			return false
+		}
+	}
+	return true
 }
 
 func countToolCalls(messages []normalizedMessage) int {
@@ -456,7 +530,8 @@ func calledToolsHaveCompleteDefinitions(messages []normalizedMessage, definition
 	for _, message := range messages {
 		for _, call := range message.calls {
 			definition, ok := definitions[call.name]
-			if !ok || !definition.complete {
+			if !ok || !definition.complete || !call.structured ||
+				!schemaAcceptsValue(definition.schema, call.arguments, definition.schema) {
 				return false
 			}
 		}

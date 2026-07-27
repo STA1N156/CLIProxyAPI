@@ -31,6 +31,12 @@ func TestInjectDataIntegration(t *testing.T) {
 		[]byte(`id="cpa-di-clear"`),
 		[]byte(`method: "DELETE"`),
 		[]byte(`confirm: "CLEAR_ALL_DATA"`),
+		[]byte(`id="cpa-di-schema-backfill"`),
+		[]byte(`id="cpa-di-schema-import"`),
+		[]byte(`id="cpa-di-schema-definition"`),
+		[]byte(`/data-integration/tool-schemas/backfill`),
+		[]byte(`/data-integration/tool-schemas/import`),
+		[]byte(`method: "PUT"`),
 	} {
 		if !bytes.Contains(DataIntegrationScript(), control) {
 			t.Fatalf("data integration script is missing %s", control)

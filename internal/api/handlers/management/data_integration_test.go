@@ -140,3 +140,58 @@ func TestClearDataIntegrationRequiresConfirmation(t *testing.T) {
 		t.Fatalf("Close() error = %v", errClose)
 	}
 }
+
+func TestDataIntegrationToolSchemaManagementHandlers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store, errStore := dataintegration.NewStore(t.TempDir())
+	if errStore != nil {
+		t.Fatalf("NewStore() error = %v", errStore)
+	}
+	defer func() {
+		_ = store.Close(context.Background())
+	}()
+	handler := &Handler{dataIntegrationStore: store}
+
+	definition := `{"name":"Read","description":"Read a file","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"}},"required":["path"]}}`
+	putResponse := httptest.NewRecorder()
+	putContext, _ := gin.CreateTestContext(putResponse)
+	putContext.Params = gin.Params{{Key: "name", Value: "Read"}}
+	putContext.Request = httptest.NewRequest(
+		http.MethodPut,
+		"/v0/management/data-integration/tool-schemas/Read",
+		bytes.NewBufferString(`{"definition":`+definition+`}`),
+	)
+	putContext.Request.Header.Set("Content-Type", "application/json")
+	handler.PutDataIntegrationToolSchema(putContext)
+	if putResponse.Code != http.StatusOK {
+		t.Fatalf("put schema status = %d, body = %s", putResponse.Code, putResponse.Body.String())
+	}
+
+	exportResponse := httptest.NewRecorder()
+	exportContext, _ := gin.CreateTestContext(exportResponse)
+	exportContext.Request = httptest.NewRequest(
+		http.MethodGet,
+		"/v0/management/data-integration/tool-schemas?download=1",
+		nil,
+	)
+	handler.ExportDataIntegrationToolSchemas(exportContext)
+	if exportResponse.Code != http.StatusOK || !bytes.Contains(exportResponse.Body.Bytes(), []byte(`"Read"`)) {
+		t.Fatalf("export schema status = %d, body = %s", exportResponse.Code, exportResponse.Body.String())
+	}
+	if exportResponse.Header().Get("Content-Disposition") == "" {
+		t.Fatal("download export must include a filename")
+	}
+
+	importResponse := httptest.NewRecorder()
+	importContext, _ := gin.CreateTestContext(importResponse)
+	importContext.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v0/management/data-integration/tool-schemas/import",
+		bytes.NewReader(exportResponse.Body.Bytes()),
+	)
+	importContext.Request.Header.Set("Content-Type", "application/json")
+	handler.ImportDataIntegrationToolSchemas(importContext)
+	if importResponse.Code != http.StatusOK {
+		t.Fatalf("import schema status = %d, body = %s", importResponse.Code, importResponse.Body.String())
+	}
+}

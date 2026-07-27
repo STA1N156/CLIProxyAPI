@@ -46,6 +46,7 @@ type persistedToolSchemaVersion struct {
 type toolSchemaVersion struct {
 	hash       string
 	definition json.RawMessage
+	schema     map[string]any
 	complete   bool
 	observed   uint64
 	firstSeen  time.Time
@@ -119,9 +120,11 @@ func (t *toolSchemaTable) load(path string) error {
 			}
 			version := versions[hash]
 			if version == nil {
+				schema, _ := firstMap(definition, "parameters", "input_schema", "parametersJsonSchema")
 				version = &toolSchemaVersion{
 					hash:       hash,
 					definition: encoded,
+					schema:     schema,
 					complete:   completeRawToolDefinition(definition),
 					firstSeen:  storedVersion.FirstSeen,
 					lastSeen:   storedVersion.LastSeen,
@@ -134,7 +137,7 @@ func (t *toolSchemaTable) load(path string) error {
 
 	t.mu.Lock()
 	t.tools = loaded
-	t.dirty = false
+	t.dirty = t.compactLocked() > 0
 	t.mu.Unlock()
 	return nil
 }
@@ -170,13 +173,21 @@ func (t *toolSchemaTable) processPayload(payload []byte, observedAt time.Time, o
 		t.mu.Unlock()
 	}
 
+	missing := make([]string, 0, len(called))
+	for name := range called {
+		if _, exists := current[name]; !exists {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return payload, nil
+	}
+
+	arguments := calledToolArguments(payload)
 	var recovered map[string]json.RawMessage
 	t.mu.RLock()
-	for name := range called {
-		if _, exists := current[name]; exists {
-			continue
-		}
-		if raw := t.bestCompleteLocked(name); len(raw) > 0 {
+	for _, name := range missing {
+		if raw := t.bestCompatibleLocked(name, arguments[name]); len(raw) > 0 {
 			if recovered == nil {
 				recovered = make(map[string]json.RawMessage)
 			}
@@ -442,9 +453,11 @@ func (t *toolSchemaTable) observeLocked(definition map[string]any, observedAt ti
 	}
 	version := versions[hash]
 	if version == nil {
+		schema, _ := firstMap(definition, "parameters", "input_schema", "parametersJsonSchema")
 		version = &toolSchemaVersion{
 			hash:       hash,
 			definition: encoded,
+			schema:     schema,
 			complete:   completeRawToolDefinition(definition),
 			firstSeen:  observedAt,
 		}
@@ -455,10 +468,20 @@ func (t *toolSchemaTable) observeLocked(definition map[string]any, observedAt ti
 	version.lastSeen = observedAt
 }
 
-func (t *toolSchemaTable) bestCompleteLocked(name string) json.RawMessage {
+func (t *toolSchemaTable) bestCompatibleLocked(name string, arguments []map[string]any) json.RawMessage {
 	var best *toolSchemaVersion
 	for _, version := range t.tools[name] {
 		if !version.complete {
+			continue
+		}
+		compatible := true
+		for _, argument := range arguments {
+			if argument == nil || !schemaAcceptsValue(version.schema, argument, version.schema) {
+				compatible = false
+				break
+			}
+		}
+		if !compatible {
 			continue
 		}
 		if best == nil ||
@@ -471,6 +494,24 @@ func (t *toolSchemaTable) bestCompleteLocked(name string) json.RawMessage {
 		return nil
 	}
 	return append(json.RawMessage(nil), best.definition...)
+}
+
+func calledToolArguments(payload []byte) map[string][]map[string]any {
+	var root map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if decoder.Decode(&root) != nil {
+		return nil
+	}
+	arguments := make(map[string][]map[string]any)
+	for _, message := range extractMessages(root) {
+		for _, call := range message.calls {
+			if call.name != "" {
+				arguments[call.name] = append(arguments[call.name], call.arguments)
+			}
+		}
+	}
+	return arguments
 }
 
 func (t *toolSchemaTable) counts() (int, int) {
@@ -500,37 +541,14 @@ func (t *toolSchemaTable) write(path string) error {
 		return nil
 	}
 	t.mu.Lock()
+	if t.compactLocked() > 0 {
+		t.dirty = true
+	}
 	if !t.dirty {
 		t.mu.Unlock()
 		return nil
 	}
-	stored := persistedToolSchemaTable{
-		Version:   toolSchemaTableVersion,
-		UpdatedAt: time.Now().UTC(),
-		Tools:     make(map[string]persistedToolSchemaSet, len(t.tools)),
-	}
-	for name, versions := range t.tools {
-		hashes := make([]string, 0, len(versions))
-		for hash := range versions {
-			hashes = append(hashes, hash)
-		}
-		sort.Strings(hashes)
-		set := persistedToolSchemaSet{
-			Versions: make([]persistedToolSchemaVersion, 0, len(hashes)),
-		}
-		for _, hash := range hashes {
-			version := versions[hash]
-			set.Versions = append(set.Versions, persistedToolSchemaVersion{
-				SchemaHash:             version.hash,
-				Definition:             append(json.RawMessage(nil), version.definition...),
-				ContractSchemaComplete: version.complete,
-				ObservedCount:          version.observed,
-				FirstSeen:              version.firstSeen,
-				LastSeen:               version.lastSeen,
-			})
-		}
-		stored.Tools[name] = set
-	}
+	stored := t.persistedLocked(time.Now().UTC())
 	t.dirty = false
 	t.mu.Unlock()
 
@@ -544,6 +562,95 @@ func (t *toolSchemaTable) write(path string) error {
 		return fmt.Errorf("write tool schema table: %w", errWrite)
 	}
 	return nil
+}
+
+func (t *toolSchemaTable) compact() int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	removed := t.compactLocked()
+	if removed > 0 {
+		t.dirty = true
+	}
+	return removed
+}
+
+func (t *toolSchemaTable) compactLocked() int {
+	removed := 0
+	for name, versions := range t.tools {
+		completeBySignature := make(map[string]*toolSchemaVersion)
+		var bestIncomplete *toolSchemaVersion
+		for _, version := range versions {
+			if !version.complete {
+				if betterToolSchemaVersion(version, bestIncomplete) {
+					bestIncomplete = version
+				}
+				continue
+			}
+			signature := toolSchemaSignature(version.schema)
+			if betterToolSchemaVersion(version, completeBySignature[signature]) {
+				completeBySignature[signature] = version
+			}
+		}
+		compacted := make(map[string]*toolSchemaVersion)
+		if len(completeBySignature) > 0 {
+			for _, version := range completeBySignature {
+				compacted[version.hash] = version
+			}
+		} else if bestIncomplete != nil {
+			compacted[bestIncomplete.hash] = bestIncomplete
+		}
+		removed += len(versions) - len(compacted)
+		if len(compacted) == 0 {
+			delete(t.tools, name)
+			continue
+		}
+		t.tools[name] = compacted
+	}
+	return removed
+}
+
+func toolSchemaSignature(schema map[string]any) string {
+	encoded, _ := json.Marshal(schemaWithoutAnnotations(schema))
+	return string(encoded)
+}
+
+func schemaWithoutAnnotations(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		cleaned := make(map[string]any, len(typed))
+		for key, child := range typed {
+			switch key {
+			case "description", "title", "$comment", "examples", "default", "deprecated", "readOnly", "writeOnly":
+				continue
+			}
+			cleaned[key] = schemaWithoutAnnotations(child)
+		}
+		return cleaned
+	case []any:
+		cleaned := make([]any, len(typed))
+		for index, child := range typed {
+			cleaned[index] = schemaWithoutAnnotations(child)
+		}
+		return cleaned
+	default:
+		return typed
+	}
+}
+
+func betterToolSchemaVersion(candidate, current *toolSchemaVersion) bool {
+	if candidate == nil {
+		return false
+	}
+	if current == nil || candidate.observed != current.observed {
+		return current == nil || candidate.observed > current.observed
+	}
+	if !candidate.lastSeen.Equal(current.lastSeen) {
+		return candidate.lastSeen.After(current.lastSeen)
+	}
+	return candidate.hash < current.hash
 }
 
 func (t *toolSchemaTable) markDirty() {

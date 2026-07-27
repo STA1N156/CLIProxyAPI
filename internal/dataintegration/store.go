@@ -23,10 +23,10 @@ import (
 
 const (
 	DefaultRootDir     = "/data"
-	statsVersion       = 7
-	dayStatsVersion    = 4
-	minStatsVersion    = 6
-	minDayStatsVersion = 3
+	statsVersion       = 8
+	dayStatsVersion    = 5
+	minStatsVersion    = 8
+	minDayStatsVersion = 5
 	maskCount          = 1 << criterionCount
 	queueSize          = 2048
 	rawQueueSize       = 2048
@@ -57,6 +57,7 @@ type pendingRecord struct {
 	tokenCount uint64
 	data       []byte
 	clear      chan clearResponse
+	backfill   *toolSchemaBackfillRequest
 }
 
 type rawRecord struct {
@@ -162,6 +163,7 @@ type Store struct {
 	workerWG      sync.WaitGroup
 	rawPending    sync.WaitGroup
 	schemaWriteWG sync.WaitGroup
+	schemaWriteMu sync.Mutex
 	queuedBytes   atomic.Int64
 	dropped       atomic.Uint64
 	schemaWriting atomic.Bool
@@ -652,12 +654,6 @@ func (s *Store) WriteZIPWithOptions(
 				_ = archive.Close()
 				return errPayload
 			}
-			payload, errPayload = s.schemaTable.enrich(payload)
-			if errPayload != nil {
-				_ = shard.Close()
-				_ = archive.Close()
-				return errPayload
-			}
 			if options.Layout == ExportLayoutContract {
 				payload, errPayload = toContractPayload(payload, options.MessageField)
 				if errPayload != nil {
@@ -812,7 +808,7 @@ func (s *Store) writer() {
 		statsDirty = false
 	}
 	flushSchemas := func() {
-		if errSchemas := s.schemaTable.write(s.schemaPath); errSchemas != nil {
+		if errSchemas := s.writeToolSchemas(); errSchemas != nil {
 			log.WithError(errSchemas).Warn("failed to persist tool schema table")
 		}
 	}
@@ -835,6 +831,15 @@ func (s *Store) writer() {
 				statsDirty = false
 			}
 			record.clear <- clearResponse{result: result, err: errClear}
+			return
+		}
+		if record.backfill != nil {
+			flushBatch()
+			result, errBackfill := s.backfillToolSchemas(record.backfill.mask, record.backfill.timeRange)
+			if errBackfill == nil {
+				statsDirty = false
+			}
+			record.backfill.response <- toolSchemaBackfillResponse{result: result, err: errBackfill}
 			return
 		}
 		batch = append(batch, record)
