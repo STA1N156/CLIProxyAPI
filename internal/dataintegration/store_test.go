@@ -103,6 +103,122 @@ func TestStoreFiltersAndWritesOneFilePerSessionZIP(t *testing.T) {
 	}
 }
 
+func TestStoreExportsNativeAntigravityMetadata(t *testing.T) {
+	t.Parallel()
+	store, errStore := NewStore(t.TempDir())
+	if errStore != nil {
+		t.Fatalf("NewStore() error = %v", errStore)
+	}
+	payload := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
+	if _, errRecord := store.RecordNative(
+		"/v1beta/models/gemini-2.5-pro:generateContent",
+		"proxy-request-id",
+		"native-session-id",
+		payload,
+	); errRecord != nil {
+		t.Fatalf("RecordNative() error = %v", errRecord)
+	}
+	if errClose := store.Close(context.Background()); errClose != nil {
+		t.Fatalf("Close() error = %v", errClose)
+	}
+
+	var archive bytes.Buffer
+	if errZIP := store.WriteZIP(&archive, 1, 0, TimeRange{}, "json"); errZIP != nil {
+		t.Fatalf("WriteZIP() error = %v", errZIP)
+	}
+	reader, errReader := zip.NewReader(bytes.NewReader(archive.Bytes()), int64(archive.Len()))
+	if errReader != nil {
+		t.Fatalf("zip.NewReader() error = %v", errReader)
+	}
+	for _, file := range reader.File {
+		if file.Name != "sessions/000001.json" {
+			continue
+		}
+		handle, errOpen := file.Open()
+		if errOpen != nil {
+			t.Fatalf("open session: %v", errOpen)
+		}
+		data, errRead := io.ReadAll(handle)
+		_ = handle.Close()
+		if errRead != nil {
+			t.Fatalf("read session: %v", errRead)
+		}
+		var session struct {
+			Model     string `json:"model"`
+			SessionID string `json:"session_id"`
+			RequestID string `json:"request_id"`
+		}
+		if errUnmarshal := json.Unmarshal(data, &session); errUnmarshal != nil {
+			t.Fatalf("decode session: %v", errUnmarshal)
+		}
+		if session.Model != "gemini-2.5-pro" || session.SessionID != "native-session-id" {
+			t.Fatalf("model/session_id = %q/%q", session.Model, session.SessionID)
+		}
+		if session.RequestID != "" {
+			t.Fatalf("proxy request_id leaked into exported data: %q", session.RequestID)
+		}
+		return
+	}
+	t.Fatal("exported session is missing")
+}
+
+func TestStorePreservesOptionalRequestFieldsInExport(t *testing.T) {
+	t.Parallel()
+	store, errStore := NewStore(t.TempDir())
+	if errStore != nil {
+		t.Fatalf("NewStore() error = %v", errStore)
+	}
+	payload := []byte(`{
+		"model":"gemini-3-flash",
+		"session_id":"session-1",
+		"metadata":{"provider":"antigravity","timestamp":"2026-07-27T12:00:00Z"},
+		"task_type":"code",
+		"domain":"software_engineering",
+		"thinking":{"summary":"inspect the repository"},
+		"reasoning":"use the repository result"
+	}`)
+	if _, errRecord := store.Record("/v1beta/models/gemini-3-flash:generateContent", "", payload); errRecord != nil {
+		t.Fatalf("Record() error = %v", errRecord)
+	}
+	if errClose := store.Close(context.Background()); errClose != nil {
+		t.Fatalf("Close() error = %v", errClose)
+	}
+
+	var archive bytes.Buffer
+	if errZIP := store.WriteZIP(&archive, 1, 0, TimeRange{}, "json"); errZIP != nil {
+		t.Fatalf("WriteZIP() error = %v", errZIP)
+	}
+	reader, errReader := zip.NewReader(bytes.NewReader(archive.Bytes()), int64(archive.Len()))
+	if errReader != nil {
+		t.Fatalf("zip.NewReader() error = %v", errReader)
+	}
+	for _, file := range reader.File {
+		if file.Name != "sessions/000001.json" {
+			continue
+		}
+		handle, errOpen := file.Open()
+		if errOpen != nil {
+			t.Fatalf("open session: %v", errOpen)
+		}
+		data, errRead := io.ReadAll(handle)
+		_ = handle.Close()
+		if errRead != nil {
+			t.Fatalf("read session: %v", errRead)
+		}
+		var session map[string]any
+		if errUnmarshal := json.Unmarshal(data, &session); errUnmarshal != nil {
+			t.Fatalf("decode session: %v", errUnmarshal)
+		}
+		for _, key := range []string{"metadata", "task_type", "domain", "thinking", "reasoning"} {
+			if value, exists := session[key]; !exists || value == nil {
+				t.Fatalf("%s was not preserved in exported session", key)
+			}
+		}
+		return
+	}
+	t.Fatal("exported session is missing")
+}
+
 func TestStoreConcurrentBurstAndTimeRange(t *testing.T) {
 	t.Parallel()
 	store, errStore := NewStore(t.TempDir())

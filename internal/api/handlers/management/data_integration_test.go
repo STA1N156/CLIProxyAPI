@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -44,7 +45,7 @@ func TestDataIntegrationStatsAndDownloadHandlers(t *testing.T) {
 	downloadContext, _ := gin.CreateTestContext(downloadResponse)
 	downloadContext.Request = httptest.NewRequest(
 		http.MethodGet,
-		"/v0/management/data-integration/download?criteria=effective_turns,first_role&count=1&format=json",
+		"/v0/management/data-integration/download?criteria=effective_turns,first_role&count=1&format=json&layout=contract&message_field=conversation",
 		nil,
 	)
 	handler.DownloadDataIntegrationZIP(downloadContext)
@@ -57,6 +58,23 @@ func TestDataIntegrationStatsAndDownloadHandlers(t *testing.T) {
 	}
 	if len(reader.File) != 2 || reader.File[1].Name != "sessions/000001.json" {
 		t.Fatalf("unexpected zip contents: %+v", reader.File)
+	}
+	session, errOpen := reader.File[1].Open()
+	if errOpen != nil {
+		t.Fatalf("open exported session: %v", errOpen)
+	}
+	defer func() {
+		_ = session.Close()
+	}()
+	var exported map[string]any
+	if errDecode := json.NewDecoder(session).Decode(&exported); errDecode != nil {
+		t.Fatalf("decode exported session: %v", errDecode)
+	}
+	if _, exists := exported["conversation"]; !exists {
+		t.Fatal("contract export is missing the selected conversation field")
+	}
+	if _, exists := exported["messages"]; exists {
+		t.Fatal("contract export must use only the selected message field")
 	}
 }
 

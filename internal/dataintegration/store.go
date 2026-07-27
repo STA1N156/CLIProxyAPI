@@ -21,8 +21,8 @@ import (
 
 const (
 	DefaultRootDir    = "/data"
-	statsVersion      = 6
-	dayStatsVersion   = 3
+	statsVersion      = 7
+	dayStatsVersion   = 4
 	maskCount         = 1 << criterionCount
 	queueSize         = 2048
 	maxBatchSize      = 256
@@ -166,13 +166,22 @@ func (s *Store) RecordRequest(path, requestID string, payload []byte) error {
 
 // Record evaluates and queues one valid JSON request.
 func (s *Store) Record(path, requestID string, payload []byte) (Evaluation, error) {
+	return s.RecordNative(path, requestID, "", payload)
+}
+
+// RecordNative records metadata that was explicitly present in the request.
+func (s *Store) RecordNative(path, requestID, sessionID string, payload []byte) (Evaluation, error) {
 	if s == nil {
 		return Evaluation{}, fmt.Errorf("data integration store is unavailable")
 	}
 	if errInit := s.ensureInitialized(); errInit != nil {
 		return Evaluation{}, errInit
 	}
-	evaluation, errEvaluate := Evaluate(payload)
+	enriched, errEnrich := enrichNativeMetadata(payload, path, sessionID)
+	if errEnrich != nil {
+		return Evaluation{}, fmt.Errorf("add native request metadata: %w", errEnrich)
+	}
+	evaluation, errEvaluate := Evaluate(enriched)
 	if errEvaluate != nil {
 		return Evaluation{}, errEvaluate
 	}
@@ -183,7 +192,7 @@ func (s *Store) Record(path, requestID string, payload []byte) (Evaluation, erro
 		RequestID:  strings.TrimSpace(requestID),
 		Path:       strings.TrimSpace(path),
 		Evaluation: evaluation,
-		Payload:    append(json.RawMessage(nil), payload...),
+		Payload:    append(json.RawMessage(nil), enriched...),
 	}
 	recordData, errMarshal := json.Marshal(record)
 	if errMarshal != nil {
@@ -293,6 +302,17 @@ func (s *Store) Stats(selectedMask uint8, timeRange TimeRange) (StatsView, error
 // WriteZIP scans newest shards and streams one-file-per-session JSON or JSONL.
 // Only one minute shard's references are held in memory at a time.
 func (s *Store) WriteZIP(writer io.Writer, count int, selectedMask uint8, timeRange TimeRange, format string) error {
+	return s.WriteZIPWithOptions(writer, count, selectedMask, timeRange, ExportOptions{Format: format})
+}
+
+// WriteZIPWithOptions streams matching sessions with the selected export layout.
+func (s *Store) WriteZIPWithOptions(
+	writer io.Writer,
+	count int,
+	selectedMask uint8,
+	timeRange TimeRange,
+	options ExportOptions,
+) error {
 	if s == nil {
 		return fmt.Errorf("data integration store is unavailable")
 	}
@@ -302,9 +322,9 @@ func (s *Store) WriteZIP(writer io.Writer, count int, selectedMask uint8, timeRa
 	if count <= 0 {
 		return fmt.Errorf("count must be greater than zero")
 	}
-	format = strings.ToLower(strings.TrimSpace(format))
-	if format != "json" && format != "jsonl" {
-		return fmt.Errorf("format must be json or jsonl")
+	options, errOptions := normalizeExportOptions(options)
+	if errOptions != nil {
+		return errOptions
 	}
 	shards, errShards := s.shardPaths()
 	if errShards != nil {
@@ -316,14 +336,20 @@ func (s *Store) WriteZIP(writer io.Writer, count int, selectedMask uint8, timeRa
 		GeneratedAt      time.Time `json:"generated_at"`
 		Count            int       `json:"count"`
 		Format           string    `json:"format"`
+		Layout           string    `json:"layout"`
+		MessageField     string    `json:"message_field,omitempty"`
 		SelectedCriteria []string  `json:"selected_criteria"`
 		From             string    `json:"from,omitempty"`
 		To               string    `json:"to,omitempty"`
 	}{
 		GeneratedAt:      time.Now().UTC(),
 		Count:            count,
-		Format:           format,
+		Format:           options.Format,
+		Layout:           options.Layout,
 		SelectedCriteria: KeysForMask(selectedMask),
+	}
+	if options.Layout == ExportLayoutContract {
+		manifest.MessageField = options.MessageField
 	}
 	if timeRange.From != nil {
 		manifest.From = timeRange.From.UTC().Format(time.RFC3339)
@@ -374,11 +400,19 @@ func (s *Store) WriteZIP(writer io.Writer, count int, selectedMask uint8, timeRa
 				_ = archive.Close()
 				return errPayload
 			}
-			if format == "jsonl" {
+			if options.Layout == ExportLayoutContract {
+				payload, errPayload = toContractPayload(payload, options.MessageField)
+				if errPayload != nil {
+					_ = shard.Close()
+					_ = archive.Close()
+					return errPayload
+				}
+			}
+			if options.Format == "jsonl" {
 				payload = append(payload, '\n')
 			}
 			exported++
-			name := fmt.Sprintf("sessions/%06d.%s", exported, format)
+			name := fmt.Sprintf("sessions/%06d.%s", exported, options.Format)
 			sessionWriter, errSession := archive.Create(name)
 			if errSession != nil {
 				_ = shard.Close()
@@ -1016,10 +1050,12 @@ func scanShard(path string, visit func(offset int64, line []byte, mask uint8, ca
 				tokenCount := header.Evaluation.TokenCount
 				if header.Evaluation.ValidatorVersion != validatorVersion || tokenCount == 0 {
 					var legacy struct {
+						Path    string          `json:"path"`
 						Payload json.RawMessage `json:"payload"`
 					}
 					if errLegacy := json.Unmarshal(line, &legacy); errLegacy == nil && json.Valid(legacy.Payload) {
-						if evaluation, errEvaluate := Evaluate(legacy.Payload); errEvaluate == nil {
+						enriched, _ := enrichNativeMetadata(legacy.Payload, legacy.Path, "")
+						if evaluation, errEvaluate := Evaluate(enriched); errEvaluate == nil {
 							mask = evaluation.Mask
 							tokenCount = evaluation.TokenCount
 						}
@@ -1052,7 +1088,11 @@ func readStoredPayload(file *os.File, record RecordRef) ([]byte, error) {
 	if !json.Valid(stored.Payload) {
 		return nil, fmt.Errorf("stored session payload is invalid JSON")
 	}
-	return stored.Payload, nil
+	enriched, errEnrich := enrichNativeMetadata(stored.Payload, stored.Path, "")
+	if errEnrich != nil {
+		return nil, fmt.Errorf("add native request metadata: %w", errEnrich)
+	}
+	return enriched, nil
 }
 
 func matchedForMask(counts []uint64, selectedMask uint8) uint64 {

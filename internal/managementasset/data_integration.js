@@ -106,8 +106,14 @@
     if (includeDownloadOptions) {
       var count = document.getElementById("cpa-di-count");
       var format = document.getElementById("cpa-di-format");
+      var layout = document.getElementById("cpa-di-layout");
+      var messageField = document.getElementById("cpa-di-message-field");
       params.set("count", count ? count.value : "1");
       params.set("format", format ? format.value : "json");
+      params.set("layout", layout ? layout.value : "raw");
+      if (layout && layout.value === "contract") {
+        params.set("message_field", messageField ? messageField.value : "messages");
+      }
     }
     return params.toString();
   }
@@ -174,6 +180,8 @@
       '<div class="cpa-di-card"><strong>打包下载</strong><div class="cpa-di-download" style="margin-top:14px">' +
       '<label class="cpa-di-field">下载条数<input id="cpa-di-count" type="number" min="1" value="1"></label>' +
       '<label class="cpa-di-field">单条文件格式<select id="cpa-di-format"><option value="json">JSON（每条一个 .json）</option><option value="jsonl">JSONL（每条一个 .jsonl）</option></select></label>' +
+      '<label class="cpa-di-field">导出结构<select id="cpa-di-layout"><option value="raw">原始格式</option><option value="contract">合同标准格式</option></select></label>' +
+      '<label class="cpa-di-field" id="cpa-di-message-field-wrap" style="display:none">消息序列字段<select id="cpa-di-message-field"><option value="messages">messages</option><option value="conversation">conversation</option><option value="trajectory">trajectory</option></select></label>' +
       '<button class="cpa-di-primary" id="cpa-di-download">下载 ZIP</button></div><div class="cpa-di-status" id="cpa-di-download-status"></div></div>' +
       "</div>";
     document.body.appendChild(overlay);
@@ -182,6 +190,10 @@
     };
     document.getElementById("cpa-di-from").onchange = loadStats;
     document.getElementById("cpa-di-to").onchange = loadStats;
+    document.getElementById("cpa-di-layout").onchange = function () {
+      document.getElementById("cpa-di-message-field-wrap").style.display =
+        this.value === "contract" ? "flex" : "none";
+    };
     document.getElementById("cpa-di-download").onclick = downloadZIP;
     return overlay;
   }

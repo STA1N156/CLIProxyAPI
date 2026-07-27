@@ -21,4 +21,16 @@ func TestInjectDataIntegration(t *testing.T) {
 	if len(DataIntegrationScript()) == 0 {
 		t.Fatalf("embedded data integration script is empty")
 	}
+	for _, control := range [][]byte{
+		[]byte(`id="cpa-di-layout"`),
+		[]byte(`value="contract"`),
+		[]byte(`id="cpa-di-message-field"`),
+		[]byte(`value="messages"`),
+		[]byte(`value="conversation"`),
+		[]byte(`value="trajectory"`),
+	} {
+		if !bytes.Contains(DataIntegrationScript(), control) {
+			t.Fatalf("data integration script is missing %s", control)
+		}
+	}
 }

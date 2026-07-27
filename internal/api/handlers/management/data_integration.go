@@ -63,6 +63,18 @@ func (h *Handler) DownloadDataIntegrationZIP(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "format must be json or jsonl"})
 		return
 	}
+	layout := strings.ToLower(strings.TrimSpace(c.DefaultQuery("layout", dataintegration.ExportLayoutRaw)))
+	if layout != dataintegration.ExportLayoutRaw && layout != dataintegration.ExportLayoutContract {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "layout must be raw or contract"})
+		return
+	}
+	messageField := strings.ToLower(strings.TrimSpace(c.DefaultQuery("message_field", "messages")))
+	switch messageField {
+	case "messages", "conversation", "trajectory":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "message_field must be messages, conversation, or trajectory"})
+		return
+	}
 
 	stats, errStats := h.dataIntegrationStore.Stats(mask, timeRange)
 	if errStats != nil {
@@ -77,12 +89,25 @@ func (h *Handler) DownloadDataIntegrationZIP(c *gin.Context) {
 	}
 
 	fileName := fmt.Sprintf("data-integration-%s.zip", time.Now().UTC().Format("20060102-150405"))
+	if layout == dataintegration.ExportLayoutContract {
+		fileName = fmt.Sprintf("data-integration-contract-%s.zip", time.Now().UTC().Format("20060102-150405"))
+	}
 	c.Header("Content-Type", "application/zip")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Status(http.StatusOK)
-	if errWrite := h.dataIntegrationStore.WriteZIP(c.Writer, count, mask, timeRange, format); errWrite != nil {
+	if errWrite := h.dataIntegrationStore.WriteZIPWithOptions(
+		c.Writer,
+		count,
+		mask,
+		timeRange,
+		dataintegration.ExportOptions{
+			Format:       format,
+			Layout:       layout,
+			MessageField: messageField,
+		},
+	); errWrite != nil {
 		log.WithError(errWrite).Warn("failed to stream data integration zip")
 	}
 }

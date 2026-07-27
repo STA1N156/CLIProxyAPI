@@ -75,3 +75,17 @@ func TestDataIntegrationMiddlewareSkipsUnauthorizedRequest(t *testing.T) {
 		t.Fatalf("stored unauthorized requests = %d, want 0", stats.TotalRequests)
 	}
 }
+
+func TestRequestSessionIDUsesOnlyExplicitHeaders(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	request.Header.Set("Session_id", "native-session")
+	if got := requestSessionID(request); got != "native-session" {
+		t.Fatalf("requestSessionID() = %q, want native-session", got)
+	}
+
+	request.Header.Del("Session_id")
+	request.Header.Set("X-Client-Request-Id", "not-a-session")
+	if got := requestSessionID(request); got != "" {
+		t.Fatalf("requestSessionID() = %q, want empty", got)
+	}
+}

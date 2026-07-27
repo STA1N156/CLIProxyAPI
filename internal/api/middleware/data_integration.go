@@ -35,11 +35,28 @@ func DataIntegrationMiddleware(store *dataintegration.Store) gin.HandlerFunc {
 			return
 		}
 
-		if _, errRecord := store.Record(c.Request.URL.Path, logging.GetGinRequestID(c), decoded); errRecord != nil {
+		if _, errRecord := store.RecordNative(
+			c.Request.URL.Path,
+			logging.GetGinRequestID(c),
+			requestSessionID(c.Request),
+			decoded,
+		); errRecord != nil {
 			log.WithError(errRecord).Warn("failed to store data integration request")
 		}
 		c.Next()
 	}
+}
+
+func requestSessionID(request *http.Request) string {
+	if request == nil {
+		return ""
+	}
+	for _, name := range []string{"X-Session-ID", "Session-Id", "Session_id", "X-Claude-Code-Session-Id"} {
+		if value := strings.TrimSpace(request.Header.Get(name)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func isDataIntegrationRequest(request *http.Request) bool {

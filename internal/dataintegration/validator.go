@@ -10,7 +10,7 @@ import (
 
 const (
 	criterionCount   = 6
-	validatorVersion = 2
+	validatorVersion = 3
 )
 
 const (
