@@ -99,7 +99,7 @@ func TestClearDataIntegrationRequiresConfirmation(t *testing.T) {
 	if errStore != nil {
 		t.Fatalf("NewStore() error = %v", errStore)
 	}
-	if _, errRecord := store.Record("/v1/responses", "request-1", []byte(`{"input":"hello"}`)); errRecord != nil {
+	if _, errRecord := store.Record("/v1/responses", "request-1", []byte(`{"messages":[{"role":"user","content":"one"},{"role":"assistant","content":"two"},{"role":"user","content":"three"},{"role":"assistant","content":"four"}]}`)); errRecord != nil {
 		t.Fatalf("Record() error = %v", errRecord)
 	}
 	handler := &Handler{dataIntegrationStore: store}

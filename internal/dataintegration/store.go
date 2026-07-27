@@ -317,9 +317,6 @@ func (s *Store) RecordNative(path, requestID, sessionID string, payload []byte) 
 	if errWarmup := s.warmupStatus(); errWarmup != nil {
 		return Evaluation{}, errWarmup
 	}
-	if errInit := s.ensureInitialized(); errInit != nil {
-		return Evaluation{}, errInit
-	}
 	pending, evaluation, errPrepare := preparePendingRecord(
 		time.Now().UTC(),
 		path,
@@ -329,6 +326,12 @@ func (s *Store) RecordNative(path, requestID, sessionID string, payload []byte) 
 	)
 	if errPrepare != nil {
 		return Evaluation{}, errPrepare
+	}
+	if len(pending.data) == 0 {
+		return evaluation, nil
+	}
+	if errInit := s.ensureInitialized(); errInit != nil {
+		return Evaluation{}, errInit
 	}
 
 	s.stateMu.Lock()
@@ -361,6 +364,9 @@ func preparePendingRecord(
 	evaluation, errEvaluate := Evaluate(enriched)
 	if errEvaluate != nil {
 		return pendingRecord{}, Evaluation{}, errEvaluate
+	}
+	if evaluation.Mask&storageRequirementMask != storageRequirementMask {
+		return pendingRecord{}, evaluation, nil
 	}
 
 	record := StoredRecord{
@@ -687,10 +693,6 @@ func (s *Store) rawWorker() {
 				defer s.rawPending.Done()
 				defer s.queuedBytes.Add(-int64(len(raw.payload)))
 
-				if errInit := s.ensureInitialized(); errInit != nil {
-					log.WithError(errInit).Warn("data integration background initialization failed")
-					return
-				}
 				payload, errDecode := decodeRawPayload(raw.payload, raw.contentEncoding)
 				if errDecode != nil {
 					log.WithError(errDecode).Debug("skipping undecodable data integration request")
@@ -705,6 +707,13 @@ func (s *Store) rawWorker() {
 				)
 				if errPrepare != nil {
 					log.WithError(errPrepare).Debug("skipping invalid data integration request")
+					return
+				}
+				if len(pending.data) == 0 {
+					return
+				}
+				if errInit := s.ensureInitialized(); errInit != nil {
+					log.WithError(errInit).Warn("data integration background initialization failed")
 					return
 				}
 				s.queue <- pending

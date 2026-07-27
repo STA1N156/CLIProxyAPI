@@ -9,9 +9,11 @@ import (
 )
 
 const (
-	criterionCount      = 6
-	validatorVersion    = 3
-	minValidatorVersion = 2
+	criterionCount         = 6
+	minimumEffectiveTurns  = 2
+	storageRequirementMask = uint8(1<<0 | 1<<1)
+	validatorVersion       = 3
+	minValidatorVersion    = 2
 )
 
 const (
@@ -32,8 +34,8 @@ type Criterion struct {
 
 // Criteria is the stable list shown by the management panel.
 var Criteria = []Criterion{
-	{Key: CriterionEffectiveTurns, Label: "每条 session 有效交互轮次 ≥ 2 轮", Bit: 1 << 0},
-	{Key: CriterionFirstRole, Label: "首条消息 role 不得为 assistant/tool", Bit: 1 << 1},
+	{Key: CriterionEffectiveTurns, Label: "每条 session 有效交互轮次 ≥ 2 轮（硬性要求）", Bit: 1 << 0},
+	{Key: CriterionFirstRole, Label: "首条消息 role 不得为 assistant/tool（硬性要求）", Bit: 1 << 1},
 	{Key: CriterionToolCall, Label: "每条 session 至少一次结构化工具调用", Bit: 1 << 2},
 	{Key: CriterionToolSchema, Label: "所有调用工具均有完整 schema", Bit: 1 << 3},
 	{Key: CriterionToolPairing, Label: "去掉尾轮待执行调用后，工具配对率为 100%", Bit: 1 << 4},
@@ -101,7 +103,7 @@ func Evaluate(payload []byte) (Evaluation, error) {
 	evaluation.EffectiveTurns = countEffectiveTurns(messages)
 	evaluation.MachineUserTurns, evaluation.UserTurns = countMachineUserTurns(messages)
 
-	if evaluation.EffectiveTurns >= 2 {
+	if evaluation.EffectiveTurns >= minimumEffectiveTurns {
 		evaluation.Mask |= bitFor(CriterionEffectiveTurns)
 	}
 	if len(messages) > 0 && validFirstRole(messages[0].role) {

@@ -12,6 +12,12 @@ func TestStoreRecordsFiltersAndExports(t *testing.T) {
 	if errStore != nil {
 		t.Fatal(errStore)
 	}
+	if _, errRecord := store.Record("/v1/responses", "too-short", []byte(`{"input":"hello"}`)); errRecord != nil {
+		t.Fatal(errRecord)
+	}
+	if _, errRecord := store.Record("/v1/responses", "bad-first-role", []byte(`{"messages":[{"role":"assistant","content":"bad start"},{"role":"user","content":"one"},{"role":"assistant","content":"two"},{"role":"user","content":"three"},{"role":"assistant","content":"four"}]}`)); errRecord != nil {
+		t.Fatal(errRecord)
+	}
 	evaluation, errRecord := store.Record("/v1/responses", "request-1", validOpenAISession(t))
 	if errRecord != nil {
 		t.Fatal(errRecord)
@@ -24,8 +30,8 @@ func TestStoreRecordsFiltersAndExports(t *testing.T) {
 	if errStats != nil {
 		t.Fatal(errStats)
 	}
-	if stats.MatchedRequests != 1 || stats.MatchedTokens == 0 {
-		t.Fatalf("matched requests/tokens = %d/%d", stats.MatchedRequests, stats.MatchedTokens)
+	if stats.TotalRequests != 1 || stats.MatchedRequests != 1 || stats.MatchedTokens == 0 {
+		t.Fatalf("total/matched/tokens = %d/%d/%d", stats.TotalRequests, stats.MatchedRequests, stats.MatchedTokens)
 	}
 
 	var output bytes.Buffer
@@ -36,7 +42,7 @@ func TestStoreRecordsFiltersAndExports(t *testing.T) {
 	if errZIP != nil {
 		t.Fatal(errZIP)
 	}
-	if len(archive.File) != 1 {
-		t.Fatalf("ZIP files = %d, want 1", len(archive.File))
+	if len(archive.File) != 2 {
+		t.Fatalf("ZIP files = %d, want 2", len(archive.File))
 	}
 }
