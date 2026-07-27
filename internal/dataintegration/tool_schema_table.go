@@ -492,6 +492,7 @@ func (t *toolSchemaTable) observeLocked(definition map[string]any, observedAt ti
 	if name == "" {
 		return false
 	}
+	recoverKnownToolSchema(definition)
 	schema, hasSchema := firstMap(definition, "parameters", "input_schema", "parametersJsonSchema")
 	if !hasSchema {
 		return false

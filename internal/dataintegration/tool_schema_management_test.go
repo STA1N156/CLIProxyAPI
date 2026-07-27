@@ -152,13 +152,18 @@ func TestToolSchemaTableDropsDefinitionsWithoutParameterSchema(t *testing.T) {
 	table.observeStoredDefinitions([]byte(`{
 		"tools":[
 			{"type":"function","function":{"name":"NoParameters","description":"Cannot be validated"}},
+			{"type":"function","function":{"name":"Build","description":"Run validation and call this with no arguments"}},
 			{"type":"function","function":{"name":"IncompleteButUseful","parameters":{"type":"object","properties":{}}}}
 		],
 		"messages":[{"role":"user","content":"remember"}]
 	}`), time.Now().UTC())
 	tools, versions := table.counts()
-	if tools != 1 || versions != 1 {
-		t.Fatalf("schema counts = %d/%d, want only the definition with a parameter signature", tools, versions)
+	if tools != 2 || versions != 2 {
+		t.Fatalf("schema counts = %d/%d, want useful and recoverable definitions", tools, versions)
+	}
+	completeTools, completeVersions := table.completeCounts()
+	if completeTools != 1 || completeVersions != 1 {
+		t.Fatalf("complete schema counts = %d/%d, want recovered Build only", completeTools, completeVersions)
 	}
 }
 

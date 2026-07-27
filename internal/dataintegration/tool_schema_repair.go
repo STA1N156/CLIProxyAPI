@@ -105,9 +105,12 @@ func (t *toolSchemaTable) repairPayloadDefinitionsLocked(
 			continue
 		}
 		repaired := cloneToolDefinition(definition)
-		if repaired == nil ||
-			fillMissingParameterDescriptions(repaired, t.decodedDefinitionsLocked(name)) == 0 ||
-			!completeRawToolDefinition(repaired) {
+		if repaired == nil {
+			continue
+		}
+		changedFields := recoverKnownToolSchema(repaired)
+		changedFields += fillMissingParameterDescriptions(repaired, t.decodedDefinitionsLocked(name))
+		if changedFields == 0 || !completeRawToolDefinition(repaired) {
 			continue
 		}
 		schema, _ := firstMap(repaired, "parameters", "input_schema", "parametersJsonSchema")
@@ -124,6 +127,21 @@ func (t *toolSchemaTable) repairPayloadDefinitionsLocked(
 		return payload, nil
 	}
 	return json.Marshal(root)
+}
+
+func recoverKnownToolSchema(definition map[string]any) int {
+	if toolDefinitionName(definition) != "Build" ||
+		!strings.Contains(firstString(definition, "description"), "call this with no arguments") {
+		return 0
+	}
+	if _, exists := firstMap(definition, "parameters", "input_schema", "parametersJsonSchema"); exists {
+		return 0
+	}
+	definition["parameters"] = map[string]any{
+		"type":       "OBJECT",
+		"properties": map[string]any{},
+	}
+	return 1
 }
 
 func (t *toolSchemaTable) decodedDefinitionsLocked(name string) []map[string]any {

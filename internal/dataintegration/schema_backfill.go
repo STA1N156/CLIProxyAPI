@@ -261,9 +261,15 @@ func (s *Store) backfillToolSchemaLine(
 		return rewritten, changed, result
 	}
 	enrichedEvaluation, errEvaluate := Evaluate(enriched)
-	if errEvaluate != nil || enrichedEvaluation.Mask&schemaBit == 0 {
+	if errEvaluate != nil {
 		result.RemainingSchemaFailures = 1
 		rewritten, changed := updateStoredEvaluation(line, record, evaluation)
+		return rewritten, changed, result
+	}
+	if enrichedEvaluation.Mask&schemaBit == 0 {
+		result.RemainingSchemaFailures = 1
+		record.Payload = append(json.RawMessage(nil), enriched...)
+		rewritten, changed := marshalStoredRecord(line, record, enrichedEvaluation)
 		return rewritten, changed, result
 	}
 	beforeDefinitions := countPayloadToolDefinitions(record.Payload)
