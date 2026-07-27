@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	criterionCount   = 6
-	validatorVersion = 3
+	criterionCount      = 6
+	validatorVersion    = 3
+	minValidatorVersion = 2
 )
 
 const (
@@ -159,6 +160,10 @@ func bitFor(key string) uint8 {
 		}
 	}
 	return 0
+}
+
+func compatibleValidatorVersion(version int) bool {
+	return version >= minValidatorVersion && version <= validatorVersion
 }
 
 func extractMessages(root map[string]any) []normalizedMessage {

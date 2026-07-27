@@ -264,6 +264,48 @@ func TestStoreConcurrentBurstAndTimeRange(t *testing.T) {
 	}
 }
 
+func TestStoreClearRemovesExistingDataAndKeepsNewRequests(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store, errStore := NewStore(root)
+	if errStore != nil {
+		t.Fatalf("NewStore() error = %v", errStore)
+	}
+	payload := validOpenAISession(t)
+	for index := 0; index < 2; index++ {
+		if _, errRecord := store.Record("/v1/responses", fmt.Sprintf("before-%d", index), payload); errRecord != nil {
+			t.Fatalf("Record(before clear) error = %v", errRecord)
+		}
+	}
+
+	cleared, errClear := store.Clear(context.Background())
+	if errClear != nil {
+		t.Fatalf("Clear() error = %v", errClear)
+	}
+	if cleared.RemovedRequests != 2 || cleared.ClearedAt.IsZero() {
+		t.Fatalf("Clear() result = %+v, want 2 removed requests", cleared)
+	}
+	empty, errStats := store.Stats(0, TimeRange{})
+	if errStats != nil || empty.TotalRequests != 0 {
+		t.Fatalf("Stats(after clear) total/error = %d/%v", empty.TotalRequests, errStats)
+	}
+	shards, errShards := store.shardPaths()
+	if errShards != nil || len(shards) != 0 {
+		t.Fatalf("shards after clear = %v, %v", shards, errShards)
+	}
+
+	if _, errRecord := store.Record("/v1/responses", "after-clear", payload); errRecord != nil {
+		t.Fatalf("Record(after clear) error = %v", errRecord)
+	}
+	if errClose := store.Close(context.Background()); errClose != nil {
+		t.Fatalf("Close() error = %v", errClose)
+	}
+	remaining, errRemaining := store.Stats(0, TimeRange{})
+	if errRemaining != nil || remaining.TotalRequests != 1 {
+		t.Fatalf("Stats(final) total/error = %d/%v", remaining.TotalRequests, errRemaining)
+	}
+}
+
 func TestStoreTimeRangeUsesExactBoundary(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -352,6 +394,84 @@ func TestStoreRebuildsStatsWhenShardOutrunsSnapshot(t *testing.T) {
 	}
 }
 
+func TestStoreLoadsCompatiblePreviousStatsVersions(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store, errStore := NewStore(root)
+	if errStore != nil {
+		t.Fatalf("NewStore() error = %v", errStore)
+	}
+	if _, errRecord := store.Record("/v1/responses", "request-1", validOpenAISession(t)); errRecord != nil {
+		t.Fatalf("Record() error = %v", errRecord)
+	}
+	if errClose := store.Close(context.Background()); errClose != nil {
+		t.Fatalf("Close() error = %v", errClose)
+	}
+
+	statsData, errStatsRead := os.ReadFile(store.statsPath)
+	if errStatsRead != nil {
+		t.Fatalf("ReadFile(stats) error = %v", errStatsRead)
+	}
+	var stats persistedStats
+	if errUnmarshal := json.Unmarshal(statsData, &stats); errUnmarshal != nil {
+		t.Fatalf("json.Unmarshal(stats) error = %v", errUnmarshal)
+	}
+	stats.Version = minStatsVersion
+	statsData, errStatsMarshal := json.Marshal(stats)
+	if errStatsMarshal != nil {
+		t.Fatalf("json.Marshal(stats) error = %v", errStatsMarshal)
+	}
+	if errWrite := os.WriteFile(store.statsPath, statsData, 0o600); errWrite != nil {
+		t.Fatalf("WriteFile(stats) error = %v", errWrite)
+	}
+
+	dayFiles, errDayFiles := filepath.Glob(filepath.Join(store.dayStatsDir, "*.json"))
+	if errDayFiles != nil || len(dayFiles) != 1 {
+		t.Fatalf("day stats files = %v, %v", dayFiles, errDayFiles)
+	}
+	dayData, errDayRead := os.ReadFile(dayFiles[0])
+	if errDayRead != nil {
+		t.Fatalf("ReadFile(day stats) error = %v", errDayRead)
+	}
+	var dayStats persistedDayStats
+	if errUnmarshal := json.Unmarshal(dayData, &dayStats); errUnmarshal != nil {
+		t.Fatalf("json.Unmarshal(day stats) error = %v", errUnmarshal)
+	}
+	dayStats.Version = minDayStatsVersion
+	dayData, errDayMarshal := json.Marshal(dayStats)
+	if errDayMarshal != nil {
+		t.Fatalf("json.Marshal(day stats) error = %v", errDayMarshal)
+	}
+	if errWrite := os.WriteFile(dayFiles[0], dayData, 0o600); errWrite != nil {
+		t.Fatalf("WriteFile(day stats) error = %v", errWrite)
+	}
+
+	reopened, errReopen := NewStore(root)
+	if errReopen != nil {
+		t.Fatalf("NewStore(reopen) error = %v", errReopen)
+	}
+	all, errAll := reopened.Stats(0, TimeRange{})
+	if errAll != nil || all.TotalRequests != 1 {
+		t.Fatalf("Stats(all) total/error = %d/%v", all.TotalRequests, errAll)
+	}
+	from := time.Now().UTC().Add(-time.Hour)
+	ranged, errRanged := reopened.Stats(0, TimeRange{From: &from})
+	if errRanged != nil || ranged.TotalRequests != 1 {
+		t.Fatalf("Stats(range) total/error = %d/%v", ranged.TotalRequests, errRanged)
+	}
+	persistedData, errPersistedRead := os.ReadFile(reopened.statsPath)
+	if errPersistedRead != nil {
+		t.Fatalf("ReadFile(reopened stats) error = %v", errPersistedRead)
+	}
+	var persisted persistedStats
+	if errUnmarshal := json.Unmarshal(persistedData, &persisted); errUnmarshal != nil {
+		t.Fatalf("json.Unmarshal(reopened stats) error = %v", errUnmarshal)
+	}
+	if persisted.Version != minStatsVersion {
+		t.Fatalf("compatible stats were rebuilt: version = %d", persisted.Version)
+	}
+}
+
 func TestStoreRevalidatesOlderRecords(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -385,7 +505,7 @@ func TestStoreRevalidatesOlderRecords(t *testing.T) {
 	if errUnmarshal := json.Unmarshal(line, &record); errUnmarshal != nil {
 		t.Fatalf("json.Unmarshal() error = %v", errUnmarshal)
 	}
-	record.Evaluation.ValidatorVersion = validatorVersion - 1
+	record.Evaluation.ValidatorVersion = minValidatorVersion - 1
 	record.Evaluation.Mask = 63
 	legacyLine, errMarshal := json.Marshal(record)
 	if errMarshal != nil {

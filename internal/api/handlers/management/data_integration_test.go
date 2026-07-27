@@ -92,3 +92,51 @@ func TestDataIntegrationTimeRangeValidation(t *testing.T) {
 		t.Fatalf("expected reversed time range to fail")
 	}
 }
+
+func TestClearDataIntegrationRequiresConfirmation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store, errStore := dataintegration.NewStore(t.TempDir())
+	if errStore != nil {
+		t.Fatalf("NewStore() error = %v", errStore)
+	}
+	if _, errRecord := store.Record("/v1/responses", "request-1", []byte(`{"input":"hello"}`)); errRecord != nil {
+		t.Fatalf("Record() error = %v", errRecord)
+	}
+	handler := &Handler{dataIntegrationStore: store}
+
+	rejectedResponse := httptest.NewRecorder()
+	rejectedContext, _ := gin.CreateTestContext(rejectedResponse)
+	rejectedContext.Request = httptest.NewRequest(
+		http.MethodDelete,
+		"/v0/management/data-integration",
+		bytes.NewBufferString(`{"confirm":"no"}`),
+	)
+	rejectedContext.Request.Header.Set("Content-Type", "application/json")
+	handler.ClearDataIntegration(rejectedContext)
+	if rejectedResponse.Code != http.StatusBadRequest {
+		t.Fatalf("unconfirmed clear status = %d, want 400", rejectedResponse.Code)
+	}
+
+	clearResponse := httptest.NewRecorder()
+	clearContext, _ := gin.CreateTestContext(clearResponse)
+	clearContext.Request = httptest.NewRequest(
+		http.MethodDelete,
+		"/v0/management/data-integration",
+		bytes.NewBufferString(`{"confirm":"CLEAR_ALL_DATA"}`),
+	)
+	clearContext.Request.Header.Set("Content-Type", "application/json")
+	handler.ClearDataIntegration(clearContext)
+	if clearResponse.Code != http.StatusOK {
+		t.Fatalf("confirmed clear status = %d, body = %s", clearResponse.Code, clearResponse.Body.String())
+	}
+	var result dataintegration.ClearResult
+	if errDecode := json.Unmarshal(clearResponse.Body.Bytes(), &result); errDecode != nil {
+		t.Fatalf("decode clear response: %v", errDecode)
+	}
+	if result.RemovedRequests != 1 {
+		t.Fatalf("removed requests = %d, want 1", result.RemovedRequests)
+	}
+	if errClose := store.Close(context.Background()); errClose != nil {
+		t.Fatalf("Close() error = %v", errClose)
+	}
+}

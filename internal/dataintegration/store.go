@@ -20,14 +20,16 @@ import (
 )
 
 const (
-	DefaultRootDir    = "/data"
-	statsVersion      = 7
-	dayStatsVersion   = 4
-	maskCount         = 1 << criterionCount
-	queueSize         = 2048
-	maxBatchSize      = 256
-	batchInterval     = 100 * time.Millisecond
-	statsSyncInterval = time.Second
+	DefaultRootDir     = "/data"
+	statsVersion       = 7
+	dayStatsVersion    = 4
+	minStatsVersion    = 6
+	minDayStatsVersion = 3
+	maskCount          = 1 << criterionCount
+	queueSize          = 2048
+	maxBatchSize       = 256
+	batchInterval      = 100 * time.Millisecond
+	statsSyncInterval  = time.Second
 )
 
 // StoredRecord is one line in an internal minute shard.
@@ -44,6 +46,12 @@ type pendingRecord struct {
 	mask       uint8
 	tokenCount uint64
 	data       []byte
+	clear      chan clearResponse
+}
+
+type clearResponse struct {
+	result ClearResult
+	err    error
 }
 
 type persistedStats struct {
@@ -94,6 +102,12 @@ type StatsView struct {
 	Criteria          []CriterionStats `json:"criteria"`
 }
 
+// ClearResult describes a completed cleanup.
+type ClearResult struct {
+	RemovedRequests uint64    `json:"removed_requests"`
+	ClearedAt       time.Time `json:"cleared_at"`
+}
+
 // RecordRef identifies one JSONL line without keeping its payload in memory.
 type RecordRef struct {
 	offset int64
@@ -115,9 +129,10 @@ type Store struct {
 	dayStats   map[string]*persistedDayStats
 	dirtyDays  map[string]struct{}
 
-	queue chan pendingRecord
-	stop  chan struct{}
-	done  chan struct{}
+	maintenanceMu sync.RWMutex
+	queue         chan pendingRecord
+	stop          chan struct{}
+	done          chan struct{}
 
 	stateMu   sync.Mutex
 	closed    bool
@@ -262,6 +277,8 @@ func (s *Store) Stats(selectedMask uint8, timeRange TimeRange) (StatsView, error
 	if errInit := s.ensureInitialized(); errInit != nil {
 		return StatsView{}, errInit
 	}
+	s.maintenanceMu.RLock()
+	defer s.maintenanceMu.RUnlock()
 	counts, tokens, total, updatedAt, errCounts := s.countsForRange(timeRange)
 	if errCounts != nil {
 		return StatsView{}, errCounts
@@ -299,6 +316,46 @@ func (s *Store) Stats(selectedMask uint8, timeRange TimeRange) (StatsView, error
 	return view, nil
 }
 
+// Clear removes all stored data integration sessions and statistics. The
+// command is serialized with writes so requests received after it are kept.
+func (s *Store) Clear(ctx context.Context) (ClearResult, error) {
+	if s == nil {
+		return ClearResult{}, fmt.Errorf("data integration store is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if errInit := s.ensureInitialized(); errInit != nil {
+		return ClearResult{}, errInit
+	}
+
+	response := make(chan clearResponse, 1)
+	s.stateMu.Lock()
+	if s.closed {
+		s.stateMu.Unlock()
+		return ClearResult{}, fmt.Errorf("data integration store is closed")
+	}
+	if !s.started {
+		s.started = true
+		go s.writer()
+	}
+	s.active.Add(1)
+	s.stateMu.Unlock()
+	defer s.active.Done()
+
+	select {
+	case s.queue <- pendingRecord{clear: response}:
+	case <-ctx.Done():
+		return ClearResult{}, ctx.Err()
+	}
+	select {
+	case cleared := <-response:
+		return cleared.result, cleared.err
+	case <-ctx.Done():
+		return ClearResult{}, ctx.Err()
+	}
+}
+
 // WriteZIP scans newest shards and streams one-file-per-session JSON or JSONL.
 // Only one minute shard's references are held in memory at a time.
 func (s *Store) WriteZIP(writer io.Writer, count int, selectedMask uint8, timeRange TimeRange, format string) error {
@@ -319,6 +376,8 @@ func (s *Store) WriteZIPWithOptions(
 	if errInit := s.ensureInitialized(); errInit != nil {
 		return errInit
 	}
+	s.maintenanceMu.RLock()
+	defer s.maintenanceMu.RUnlock()
 	if count <= 0 {
 		return fmt.Errorf("count must be greater than zero")
 	}
@@ -468,14 +527,26 @@ func (s *Store) writer() {
 		}
 		statsDirty = false
 	}
+	handleRecord := func(record pendingRecord) {
+		if record.clear != nil {
+			flushBatch()
+			result, errClear := s.clearStoredData()
+			if errClear == nil {
+				statsDirty = false
+			}
+			record.clear <- clearResponse{result: result, err: errClear}
+			return
+		}
+		batch = append(batch, record)
+		if len(batch) >= maxBatchSize {
+			flushBatch()
+		}
+	}
 
 	for {
 		select {
 		case record := <-s.queue:
-			batch = append(batch, record)
-			if len(batch) >= maxBatchSize {
-				flushBatch()
-			}
+			handleRecord(record)
 		case <-batchTicker.C:
 			flushBatch()
 		case <-statsTicker.C:
@@ -484,10 +555,7 @@ func (s *Store) writer() {
 			for {
 				select {
 				case record := <-s.queue:
-					batch = append(batch, record)
-					if len(batch) >= maxBatchSize {
-						flushBatch()
-					}
+					handleRecord(record)
 				default:
 					flushBatch()
 					flushStats()
@@ -496,6 +564,45 @@ func (s *Store) writer() {
 			}
 		}
 	}
+}
+
+func (s *Store) clearStoredData() (ClearResult, error) {
+	s.maintenanceMu.Lock()
+	defer s.maintenanceMu.Unlock()
+
+	s.statsMu.RLock()
+	removed := s.stats.Total
+	s.statsMu.RUnlock()
+
+	for _, path := range []string{s.sessionsDir, s.dayStatsDir} {
+		if errRemove := os.RemoveAll(path); errRemove != nil {
+			return ClearResult{}, fmt.Errorf("remove data integration files: %w", errRemove)
+		}
+		if errMkdir := os.MkdirAll(path, 0o700); errMkdir != nil {
+			return ClearResult{}, fmt.Errorf("recreate data integration directory: %w", errMkdir)
+		}
+	}
+	if errRemove := os.Remove(s.statsPath); errRemove != nil && !errors.Is(errRemove, os.ErrNotExist) {
+		return ClearResult{}, fmt.Errorf("remove data integration statistics: %w", errRemove)
+	}
+
+	clearedAt := time.Now().UTC()
+	s.statsMu.Lock()
+	s.stats = persistedStats{
+		Version:     statsVersion,
+		MaskCounts:  make([]uint64, maskCount),
+		TokenCounts: make([]uint64, maskCount),
+		UpdatedAt:   clearedAt,
+	}
+	s.statsMu.Unlock()
+	s.dayStatsMu.Lock()
+	s.dayStats = make(map[string]*persistedDayStats)
+	s.dirtyDays = make(map[string]struct{})
+	s.dayStatsMu.Unlock()
+	if errStats := s.writeStats(); errStats != nil {
+		return ClearResult{}, fmt.Errorf("write cleared data integration statistics: %w", errStats)
+	}
+	return ClearResult{RemovedRequests: removed, ClearedAt: clearedAt}, nil
 }
 
 func (s *Store) ensureInitialized() error {
@@ -626,7 +733,8 @@ func (s *Store) loadDayStatsFile(day string) *persistedDayStats {
 		return stats
 	}
 	var stored persistedDayStats
-	if errUnmarshal := json.Unmarshal(data, &stored); errUnmarshal != nil || stored.Version != dayStatsVersion || stored.Day != day {
+	if errUnmarshal := json.Unmarshal(data, &stored); errUnmarshal != nil ||
+		stored.Version < minDayStatsVersion || stored.Version > dayStatsVersion || stored.Day != day {
 		return stats
 	}
 	if stored.Minutes == nil {
@@ -679,7 +787,8 @@ func (s *Store) loadOrRebuildStats() error {
 	data, errRead := os.ReadFile(s.statsPath)
 	if errRead == nil {
 		var stats persistedStats
-		if errUnmarshal := json.Unmarshal(data, &stats); errUnmarshal == nil && stats.Version == statsVersion {
+		if errUnmarshal := json.Unmarshal(data, &stats); errUnmarshal == nil &&
+			stats.Version >= minStatsVersion && stats.Version <= statsVersion {
 			latestPath, latestSize, errLatest := s.latestShardState()
 			if errLatest != nil {
 				return errLatest
@@ -1048,7 +1157,7 @@ func scanShard(path string, visit func(offset int64, line []byte, mask uint8, ca
 			if errUnmarshal := json.Unmarshal(line, &header); errUnmarshal == nil {
 				mask := header.Evaluation.Mask
 				tokenCount := header.Evaluation.TokenCount
-				if header.Evaluation.ValidatorVersion != validatorVersion || tokenCount == 0 {
+				if !compatibleValidatorVersion(header.Evaluation.ValidatorVersion) || tokenCount == 0 {
 					var legacy struct {
 						Path    string          `json:"path"`
 						Payload json.RawMessage `json:"payload"`

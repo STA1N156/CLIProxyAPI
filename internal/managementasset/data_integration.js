@@ -15,6 +15,7 @@
     authValue: "",
     selected: new Set(criteriaKeys),
     stats: null,
+    statsController: null,
   };
 
   function headerValue(headers, name) {
@@ -134,26 +135,31 @@
     var style = document.createElement("style");
     style.id = "cpa-di-style";
     style.textContent =
-      "#cpa-di-entry{display:flex;align-items:center;gap:10px;width:calc(100% - 16px);margin:8px;padding:10px 12px;border:0;border-radius:9px;background:rgba(37,99,235,.12);color:inherit;font:inherit;cursor:pointer;text-align:left}" +
-      "#cpa-di-entry:hover{background:rgba(37,99,235,.22)}" +
-      "#cpa-di-fallback{position:fixed;left:0;top:48%;z-index:2147482000;border:0;border-radius:0 10px 10px 0;padding:12px 10px;background:#2563eb;color:#fff;cursor:pointer;writing-mode:vertical-rl;letter-spacing:2px}" +
-      "#cpa-di-overlay{position:fixed;inset:0;z-index:2147483000;background:#f5f7fb;color:#172033;overflow:auto;font-family:Inter,system-ui,-apple-system,\"Segoe UI\",sans-serif}" +
+      "#cpa-di-entry{display:flex;align-items:center;gap:10px;width:calc(100% - 16px);margin:8px;padding:11px 12px;border:1px solid rgba(79,70,229,.18);border-radius:10px;background:linear-gradient(135deg,rgba(79,70,229,.14),rgba(14,165,233,.09));color:inherit;font:inherit;cursor:pointer;text-align:left;transition:.18s ease}" +
+      "#cpa-di-entry:hover{border-color:rgba(79,70,229,.38);transform:translateY(-1px)}" +
+      "#cpa-di-fallback{position:fixed;left:0;top:48%;z-index:2147482000;border:0;border-radius:0 12px 12px 0;padding:13px 10px;background:#4f46e5;color:#fff;box-shadow:0 8px 24px rgba(79,70,229,.3);cursor:pointer;writing-mode:vertical-rl;letter-spacing:2px}" +
+      "#cpa-di-overlay{position:fixed;inset:0;z-index:2147483000;background:radial-gradient(circle at 15% 0,rgba(99,102,241,.10),transparent 32%),#f7f8fc;color:#172033;overflow:auto;font-family:Inter,system-ui,-apple-system,\"Segoe UI\",sans-serif}" +
       "#cpa-di-overlay *{box-sizing:border-box}" +
-      ".cpa-di-shell{max-width:1120px;margin:0 auto;padding:28px 24px 48px}" +
-      ".cpa-di-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:22px}" +
-      ".cpa-di-title{margin:0;font-size:28px}.cpa-di-sub{margin:8px 0 0;color:#667085}" +
-      ".cpa-di-close{border:1px solid #d0d5dd;border-radius:9px;background:#fff;padding:9px 15px;cursor:pointer}" +
-      ".cpa-di-card{background:#fff;border:1px solid #e4e7ec;border-radius:14px;padding:20px;box-shadow:0 5px 18px rgba(16,24,40,.05);margin-bottom:18px}" +
-      ".cpa-di-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}" +
-      ".cpa-di-stat{background:#f8fafc;border-radius:11px;padding:16px}.cpa-di-stat b{display:block;font-size:27px;margin-top:5px}.cpa-di-label{color:#667085;font-size:13px}" +
-      ".cpa-di-criteria{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}" +
-      ".cpa-di-check{display:flex;gap:10px;align-items:flex-start;border:1px solid #e4e7ec;border-radius:10px;padding:13px;cursor:pointer}" +
-      ".cpa-di-check input{margin-top:3px}.cpa-di-check small{display:block;color:#667085;margin-top:5px}" +
-      ".cpa-di-download{display:flex;gap:12px;align-items:end;flex-wrap:wrap}.cpa-di-field{display:flex;flex-direction:column;gap:6px;color:#475467;font-size:13px}" +
-      ".cpa-di-field input,.cpa-di-field select{min-width:150px;border:1px solid #d0d5dd;border-radius:9px;background:#fff;padding:10px 12px;font:inherit;color:#172033}" +
-      ".cpa-di-primary{border:0;border-radius:9px;background:#2563eb;color:#fff;padding:11px 18px;font-weight:600;cursor:pointer}.cpa-di-primary:disabled{opacity:.5;cursor:not-allowed}" +
-      ".cpa-di-status{min-height:22px;margin-top:12px;color:#667085}.cpa-di-error{color:#b42318}" +
-      "@media(max-width:720px){.cpa-di-summary,.cpa-di-criteria{grid-template-columns:1fr}.cpa-di-shell{padding:20px 14px}}";
+      ".cpa-di-shell{max-width:1180px;margin:0 auto;padding:30px 24px 56px}" +
+      ".cpa-di-header{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:24px}.cpa-di-brand{display:flex;align-items:center;gap:14px}" +
+      ".cpa-di-logo{display:grid;place-items:center;width:46px;height:46px;border-radius:14px;background:linear-gradient(135deg,#4f46e5,#0ea5e9);box-shadow:0 10px 26px rgba(79,70,229,.25);color:#fff;font-size:22px}" +
+      ".cpa-di-title{margin:0;font-size:28px;line-height:1.2}.cpa-di-sub{margin:6px 0 0;color:#667085}.cpa-di-actions{display:flex;gap:9px}" +
+      ".cpa-di-button{border:1px solid #d0d5dd;border-radius:10px;background:#fff;color:#344054;padding:10px 15px;font:inherit;font-weight:600;cursor:pointer;transition:.15s ease}.cpa-di-button:hover{background:#f9fafb}.cpa-di-button:disabled{opacity:.45;cursor:not-allowed}" +
+      ".cpa-di-card{background:rgba(255,255,255,.96);border:1px solid #e4e7ec;border-radius:16px;padding:21px;box-shadow:0 8px 28px rgba(16,24,40,.055);margin-bottom:18px}" +
+      ".cpa-di-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px}.cpa-di-stat{position:relative;overflow:hidden;background:#f8fafc;border:1px solid #eef2f6;border-radius:13px;padding:17px}" +
+      ".cpa-di-stat:first-child{background:linear-gradient(135deg,#eef2ff,#f8fafc)}.cpa-di-stat b{display:block;font-size:27px;line-height:1.2;margin-top:7px;overflow-wrap:anywhere}.cpa-di-label{color:#667085;font-size:13px}" +
+      ".cpa-di-meta{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:15px;padding-top:14px;border-top:1px solid #eef2f6;color:#667085;font-size:13px}.cpa-di-meta strong{color:#344054}" +
+      ".cpa-di-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}.cpa-di-section-head strong{font-size:17px}.cpa-di-help{margin:5px 0 0;color:#667085;font-size:13px}" +
+      ".cpa-di-badge{border-radius:999px;background:#eef2ff;color:#4338ca;padding:6px 10px;font-size:12px;font-weight:700;white-space:nowrap}" +
+      ".cpa-di-criteria{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:15px}.cpa-di-check{display:flex;gap:11px;align-items:flex-start;border:1px solid #e4e7ec;border-radius:11px;padding:14px;cursor:pointer;transition:.15s ease}.cpa-di-check:hover{border-color:#a5b4fc;background:#fafaff}.cpa-di-check-selected{border-color:#818cf8;background:#f5f7ff}" +
+      ".cpa-di-check input{margin-top:3px;accent-color:#4f46e5}.cpa-di-check small{display:block;color:#667085;margin-top:5px}" +
+      ".cpa-di-form{display:flex;gap:12px;align-items:end;flex-wrap:wrap}.cpa-di-field{display:flex;flex:1 1 155px;max-width:240px;flex-direction:column;gap:7px;color:#475467;font-size:13px}" +
+      ".cpa-di-field input,.cpa-di-field select{width:100%;min-width:0;border:1px solid #d0d5dd;border-radius:10px;background:#fff;padding:10px 11px;font:inherit;color:#172033;outline:none}.cpa-di-field input:focus,.cpa-di-field select:focus{border-color:#818cf8;box-shadow:0 0 0 3px rgba(99,102,241,.12)}" +
+      ".cpa-di-primary{border:0;border-radius:10px;background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;padding:11px 18px;font:inherit;font-weight:700;cursor:pointer;box-shadow:0 7px 18px rgba(79,70,229,.2)}.cpa-di-primary:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}" +
+      ".cpa-di-status{min-height:22px;margin-top:13px;color:#667085;font-size:13px}.cpa-di-error{color:#b42318}.cpa-di-success{color:#067647}" +
+      ".cpa-di-danger{display:flex;align-items:center;justify-content:space-between;gap:18px;border-color:#fecdca;background:#fffafa}.cpa-di-danger strong{color:#b42318}.cpa-di-danger p{margin:5px 0 0;color:#7a271a;font-size:13px}.cpa-di-danger-button{border:1px solid #f04438;border-radius:10px;background:#fff;color:#b42318;padding:10px 15px;font:inherit;font-weight:700;cursor:pointer;white-space:nowrap}.cpa-di-danger-button:hover{background:#fff1f0}.cpa-di-danger-button:disabled{opacity:.45;cursor:not-allowed}" +
+      "@media(max-width:820px){.cpa-di-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.cpa-di-criteria{grid-template-columns:1fr}}" +
+      "@media(max-width:560px){.cpa-di-shell{padding:20px 13px 40px}.cpa-di-header{align-items:flex-start}.cpa-di-sub{display:none}.cpa-di-actions{flex-direction:column}.cpa-di-summary{grid-template-columns:1fr 1fr}.cpa-di-stat b{font-size:21px}.cpa-di-danger{align-items:flex-start;flex-direction:column}.cpa-di-danger-button{width:100%}}";
     document.head.appendChild(style);
   }
 
@@ -167,49 +173,77 @@
     overlay.id = "cpa-di-overlay";
     overlay.innerHTML =
       '<div class="cpa-di-shell">' +
-      '<div class="cpa-di-header"><div><h1 class="cpa-di-title">数据整合</h1><p class="cpa-di-sub">按勾选条件查看请求满足率，并把最新匹配数据打包下载。</p></div><button class="cpa-di-close" id="cpa-di-close">返回管理面板</button></div>' +
+      '<div class="cpa-di-header"><div class="cpa-di-brand"><div class="cpa-di-logo">◆</div><div><h1 class="cpa-di-title">数据整合</h1><p class="cpa-di-sub">筛选、统计并导出符合合同要求的请求数据</p></div></div><div class="cpa-di-actions"><button class="cpa-di-button" id="cpa-di-refresh">刷新</button><button class="cpa-di-button" id="cpa-di-close">返回面板</button></div></div>' +
       '<div class="cpa-di-card"><div class="cpa-di-summary">' +
       '<div class="cpa-di-stat"><span class="cpa-di-label">请求满足比率</span><b id="cpa-di-rate">--</b></div>' +
       '<div class="cpa-di-stat"><span class="cpa-di-label">满足 / 总请求</span><b id="cpa-di-counts">--</b></div>' +
-      '<div class="cpa-di-stat"><span class="cpa-di-label">存储位置</span><b id="cpa-di-storage" style="font-size:18px">/data</b></div>' +
-      "</div></div>" +
-      '<div class="cpa-di-card"><strong>筛选条件</strong><div class="cpa-di-download" style="margin-top:14px">' +
+      '<div class="cpa-di-stat"><span class="cpa-di-label">匹配 Token 总数</span><b id="cpa-di-tokens">--</b></div>' +
+      '<div class="cpa-di-stat"><span class="cpa-di-label">待写入队列</span><b id="cpa-di-queue">--</b></div>' +
+      '</div><div class="cpa-di-meta"><span>存储位置：<strong id="cpa-di-storage">/data</strong></span><span id="cpa-di-updated">等待读取统计</span></div></div>' +
+      '<div class="cpa-di-card"><div class="cpa-di-section-head"><div><strong>筛选条件</strong><p class="cpa-di-help">已勾选条件按“同时满足”计算；不勾选则包含全部数据。</p></div><span class="cpa-di-badge" id="cpa-di-selected-count">已选 6 项</span></div><div class="cpa-di-form">' +
       '<label class="cpa-di-field">开始时间<input id="cpa-di-from" type="datetime-local"></label>' +
-      '<label class="cpa-di-field">结束时间<input id="cpa-di-to" type="datetime-local"></label></div>' +
+      '<label class="cpa-di-field">结束时间<input id="cpa-di-to" type="datetime-local"></label><button class="cpa-di-button" id="cpa-di-reset-time">全部时间</button></div>' +
       '<div class="cpa-di-criteria" id="cpa-di-criteria"></div><div class="cpa-di-status" id="cpa-di-filter-status"></div></div>' +
-      '<div class="cpa-di-card"><strong>打包下载</strong><div class="cpa-di-download" style="margin-top:14px">' +
+      '<div class="cpa-di-card"><div class="cpa-di-section-head"><div><strong>打包下载</strong><p class="cpa-di-help">每条数据单独保存，再统一打包成 ZIP 下载到当前浏览器。</p></div></div><div class="cpa-di-form">' +
       '<label class="cpa-di-field">下载条数<input id="cpa-di-count" type="number" min="1" value="1"></label>' +
       '<label class="cpa-di-field">单条文件格式<select id="cpa-di-format"><option value="json">JSON（每条一个 .json）</option><option value="jsonl">JSONL（每条一个 .jsonl）</option></select></label>' +
       '<label class="cpa-di-field">导出结构<select id="cpa-di-layout"><option value="raw">原始格式</option><option value="contract">合同标准格式</option></select></label>' +
       '<label class="cpa-di-field" id="cpa-di-message-field-wrap" style="display:none">消息序列字段<select id="cpa-di-message-field"><option value="messages">messages</option><option value="conversation">conversation</option><option value="trajectory">trajectory</option></select></label>' +
-      '<button class="cpa-di-primary" id="cpa-di-download">下载 ZIP</button></div><div class="cpa-di-status" id="cpa-di-download-status"></div></div>' +
+      '<button class="cpa-di-button" id="cpa-di-all-count">全部条数</button><button class="cpa-di-primary" id="cpa-di-download">下载 ZIP</button></div><div class="cpa-di-status" id="cpa-di-download-status"></div></div>' +
+      '<div class="cpa-di-card cpa-di-danger"><div><strong>清理已存数据</strong><p>永久删除数据整合的全部 session 与统计；不会删除凭证或面板配置。</p><div class="cpa-di-status" id="cpa-di-clear-status"></div></div><button class="cpa-di-danger-button" id="cpa-di-clear">清理全部数据</button></div>' +
       "</div>";
     document.body.appendChild(overlay);
     document.getElementById("cpa-di-close").onclick = function () {
+      if (state.statsController) {
+        state.statsController.abort();
+      }
       overlay.remove();
     };
+    document.getElementById("cpa-di-refresh").onclick = loadStats;
     document.getElementById("cpa-di-from").onchange = loadStats;
     document.getElementById("cpa-di-to").onchange = loadStats;
+    document.getElementById("cpa-di-reset-time").onclick = function () {
+      document.getElementById("cpa-di-from").value = "";
+      document.getElementById("cpa-di-to").value = "";
+      loadStats();
+    };
     document.getElementById("cpa-di-layout").onchange = function () {
       document.getElementById("cpa-di-message-field-wrap").style.display =
         this.value === "contract" ? "flex" : "none";
     };
+    document.getElementById("cpa-di-all-count").onclick = function () {
+      if (state.stats) {
+        document.getElementById("cpa-di-count").value = String(state.stats.available_download || 0);
+      }
+    };
     document.getElementById("cpa-di-download").onclick = downloadZIP;
+    document.getElementById("cpa-di-clear").onclick = clearData;
     return overlay;
   }
 
   function renderStats(stats) {
+    if (!document.getElementById("cpa-di-overlay")) {
+      return;
+    }
     state.stats = stats;
     document.getElementById("cpa-di-rate").textContent = percent(stats.match_rate);
     document.getElementById("cpa-di-counts").textContent =
-      String(stats.matched_requests) + " / " + String(stats.total_requests);
+      integer(stats.matched_requests) + " / " + integer(stats.total_requests);
+    document.getElementById("cpa-di-tokens").textContent = integer(stats.matched_tokens);
+    document.getElementById("cpa-di-queue").textContent = integer(stats.queue_depth);
     document.getElementById("cpa-di-storage").textContent = stats.storage_directory || "/data";
+    document.getElementById("cpa-di-updated").textContent = stats.updated_at
+      ? "统计更新：" + new Date(stats.updated_at).toLocaleString("zh-CN")
+      : "统计已更新";
+    document.getElementById("cpa-di-selected-count").textContent =
+      "已选 " + state.selected.size + " 项";
 
     var criteriaRoot = document.getElementById("cpa-di-criteria");
     criteriaRoot.innerHTML = "";
     (stats.criteria || []).forEach(function (criterion) {
       var label = document.createElement("label");
-      label.className = "cpa-di-check";
+      label.className =
+        "cpa-di-check" + (state.selected.has(criterion.key) ? " cpa-di-check-selected" : "");
       var checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.checked = state.selected.has(criterion.key);
@@ -243,6 +277,8 @@
       count.value = "0";
     }
     document.getElementById("cpa-di-download").disabled = available === 0;
+    document.getElementById("cpa-di-all-count").disabled = available === 0;
+    document.getElementById("cpa-di-clear").disabled = Number(stats.total_requests || 0) === 0;
     document.getElementById("cpa-di-filter-status").textContent =
       "当前满足 " +
       integer(stats.matched_requests) +
@@ -254,6 +290,17 @@
 
   async function loadStats() {
     var status = document.getElementById("cpa-di-filter-status");
+    if (!status) {
+      return;
+    }
+    if (state.statsController) {
+      state.statsController.abort();
+    }
+    var controller = new AbortController();
+    state.statsController = controller;
+    var timeout = window.setTimeout(function () {
+      controller.abort();
+    }, 15000);
     if (status) {
       status.textContent = "正在读取统计…";
       status.className = "cpa-di-status";
@@ -262,16 +309,63 @@
       var response = await fetch(state.base + "/data-integration/stats?" + queryString(false), {
         headers: requestHeaders(),
         cache: "no-store",
+        signal: controller.signal,
       });
       if (!response.ok) {
         throw new Error(response.status === 401 ? "请先在管理面板完成连接，再打开数据整合。" : await response.text());
       }
       renderStats(await response.json());
     } catch (error) {
-      if (status) {
-        status.textContent = error && error.message ? error.message : "读取统计失败";
+      if (status && state.statsController === controller) {
+        status.textContent =
+          error && error.name === "AbortError"
+            ? "统计读取超过 15 秒，请点击“刷新”重试。"
+            : error && error.message
+              ? error.message
+              : "读取统计失败";
         status.className = "cpa-di-status cpa-di-error";
       }
+    } finally {
+      window.clearTimeout(timeout);
+      if (state.statsController === controller) {
+        state.statsController = null;
+      }
+    }
+  }
+
+  async function clearData() {
+    if (
+      !window.confirm(
+        "确定永久清理全部数据整合记录吗？\n\n此操作会删除已存 session 和统计，且无法恢复。"
+      )
+    ) {
+      return;
+    }
+    var button = document.getElementById("cpa-di-clear");
+    var status = document.getElementById("cpa-di-clear-status");
+    button.disabled = true;
+    status.textContent = "正在清理…";
+    status.className = "cpa-di-status";
+    try {
+      var headers = requestHeaders();
+      headers["Content-Type"] = "application/json";
+      var response = await fetch(state.base + "/data-integration", {
+        method: "DELETE",
+        headers: headers,
+        body: JSON.stringify({ confirm: "CLEAR_ALL_DATA" }),
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      var result = await response.json();
+      status.textContent = "已清理 " + integer(result.removed_requests) + " 条数据。";
+      status.className = "cpa-di-status cpa-di-success";
+      await loadStats();
+    } catch (error) {
+      status.textContent = error && error.message ? error.message : "清理失败";
+      status.className = "cpa-di-status cpa-di-error";
+      button.disabled = false;
     }
   }
 

@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -34,6 +35,29 @@ func (h *Handler) GetDataIntegrationStats(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, stats)
+}
+
+// ClearDataIntegration removes all stored sessions and resets their statistics.
+func (h *Handler) ClearDataIntegration(c *gin.Context) {
+	if h == nil || h.dataIntegrationStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "data integration storage is unavailable"})
+		return
+	}
+	var request struct {
+		Confirm string `json:"confirm"`
+	}
+	if errBind := c.ShouldBindJSON(&request); errBind != nil || request.Confirm != "CLEAR_ALL_DATA" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "confirm must be CLEAR_ALL_DATA"})
+		return
+	}
+	clearContext, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	result, errClear := h.dataIntegrationStore.Clear(clearContext)
+	if errClear != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errClear.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 // DownloadDataIntegrationZIP streams matching sessions to the administrator's browser.

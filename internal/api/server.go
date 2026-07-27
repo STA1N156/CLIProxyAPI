@@ -890,6 +890,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 		mgmt.GET("/data-integration/stats", s.mgmt.GetDataIntegrationStats)
 		mgmt.GET("/data-integration/download", s.mgmt.DownloadDataIntegrationZIP)
+		mgmt.DELETE("/data-integration", s.mgmt.ClearDataIntegration)
 
 		mgmt.GET("/gemini-api-key", s.mgmt.GetGeminiKeys)
 		mgmt.PUT("/gemini-api-key", s.mgmt.PutGeminiKeys)

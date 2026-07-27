@@ -28,6 +28,9 @@ func TestInjectDataIntegration(t *testing.T) {
 		[]byte(`value="messages"`),
 		[]byte(`value="conversation"`),
 		[]byte(`value="trajectory"`),
+		[]byte(`id="cpa-di-clear"`),
+		[]byte(`method: "DELETE"`),
+		[]byte(`confirm: "CLEAR_ALL_DATA"`),
 	} {
 		if !bytes.Contains(DataIntegrationScript(), control) {
 			t.Fatalf("data integration script is missing %s", control)
