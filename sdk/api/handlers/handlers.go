@@ -75,6 +75,11 @@ type PluginInterceptorHost interface {
 	InterceptStreamChunk(context.Context, pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse
 }
 
+// DataIntegrationRecorder stores complete normalized session requests.
+type DataIntegrationRecorder interface {
+	RecordRequest(path, requestID string, payload []byte) error
+}
+
 type pluginInterceptorSkipHost interface {
 	InterceptRequestBeforeAuthExcept(context.Context, pluginapi.RequestInterceptRequest, string) pluginapi.RequestInterceptResponse
 	InterceptRequestAfterAuthExcept(context.Context, pluginapi.RequestInterceptRequest, string) pluginapi.RequestInterceptResponse
@@ -442,6 +447,9 @@ type BaseAPIHandler struct {
 	// ModelRouterHost optionally routes matching requests to a plugin executor, the router's own
 	// executor, or a built-in provider before model-to-provider resolution and auth selection.
 	ModelRouterHost PluginModelRouterHost
+
+	// DataIntegrationRecorder optionally persists normalized session requests.
+	DataIntegrationRecorder DataIntegrationRecorder
 }
 
 // NewBaseAPIHandlers creates a new API handlers instance.
@@ -490,6 +498,22 @@ func (h *BaseAPIHandler) SetModelRouterHost(host PluginModelRouterHost) {
 		return
 	}
 	h.ModelRouterHost = host
+}
+
+// SetDataIntegrationRecorder configures optional session request persistence.
+func (h *BaseAPIHandler) SetDataIntegrationRecorder(recorder DataIntegrationRecorder) {
+	if h == nil {
+		return
+	}
+	h.DataIntegrationRecorder = recorder
+}
+
+// RecordDataIntegrationRequest persists a normalized request when enabled.
+func (h *BaseAPIHandler) RecordDataIntegrationRequest(path, requestID string, payload []byte) error {
+	if h == nil || h.DataIntegrationRecorder == nil {
+		return nil
+	}
+	return h.DataIntegrationRecorder.RecordRequest(path, requestID, payload)
 }
 
 func isNilPluginInterceptorHost(host PluginInterceptorHost) bool {
