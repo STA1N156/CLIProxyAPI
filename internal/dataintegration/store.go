@@ -107,19 +107,21 @@ type CriterionStats struct {
 
 // StatsView is the management-friendly statistics snapshot.
 type StatsView struct {
-	TotalRequests     uint64           `json:"total_requests"`
-	MatchedRequests   uint64           `json:"matched_requests"`
-	MatchedTokens     uint64           `json:"matched_tokens"`
-	MatchRate         float64          `json:"match_rate"`
-	SelectedCriteria  []string         `json:"selected_criteria"`
-	AvailableDownload uint64           `json:"available_download"`
-	StorageDirectory  string           `json:"storage_directory"`
-	QueueDepth        int              `json:"queue_depth"`
-	DroppedRequests   uint64           `json:"dropped_requests"`
-	From              string           `json:"from,omitempty"`
-	To                string           `json:"to,omitempty"`
-	UpdatedAt         time.Time        `json:"updated_at"`
-	Criteria          []CriterionStats `json:"criteria"`
+	TotalRequests      uint64           `json:"total_requests"`
+	MatchedRequests    uint64           `json:"matched_requests"`
+	MatchedTokens      uint64           `json:"matched_tokens"`
+	MatchRate          float64          `json:"match_rate"`
+	SelectedCriteria   []string         `json:"selected_criteria"`
+	AvailableDownload  uint64           `json:"available_download"`
+	StorageDirectory   string           `json:"storage_directory"`
+	QueueDepth         int              `json:"queue_depth"`
+	DroppedRequests    uint64           `json:"dropped_requests"`
+	ToolSchemaCount    int              `json:"tool_schema_count"`
+	ToolSchemaVersions int              `json:"tool_schema_versions"`
+	From               string           `json:"from,omitempty"`
+	To                 string           `json:"to,omitempty"`
+	UpdatedAt          time.Time        `json:"updated_at"`
+	Criteria           []CriterionStats `json:"criteria"`
 }
 
 // ClearResult describes a completed cleanup.
@@ -141,6 +143,8 @@ type Store struct {
 	sessionsDir string
 	statsPath   string
 	dayStatsDir string
+	schemaPath  string
+	schemaTable *toolSchemaTable
 
 	statsMu sync.RWMutex
 	stats   persistedStats
@@ -157,8 +161,10 @@ type Store struct {
 	done          chan struct{}
 	workerWG      sync.WaitGroup
 	rawPending    sync.WaitGroup
+	schemaWriteWG sync.WaitGroup
 	queuedBytes   atomic.Int64
 	dropped       atomic.Uint64
+	schemaWriting atomic.Bool
 
 	stateMu   sync.Mutex
 	closed    bool
@@ -195,6 +201,8 @@ func NewStore(root string) (*Store, error) {
 		sessionsDir: filepath.Join(root, "sessions"),
 		statsPath:   filepath.Join(root, "stats.json"),
 		dayStatsDir: filepath.Join(root, "stats"),
+		schemaPath:  filepath.Join(root, toolSchemaTableFileName),
+		schemaTable: newToolSchemaTable(),
 		dayStats:    make(map[string]*persistedDayStats),
 		dirtyDays:   make(map[string]struct{}),
 		queue:       make(chan pendingRecord, queueSize),
@@ -317,12 +325,19 @@ func (s *Store) RecordNative(path, requestID, sessionID string, payload []byte) 
 	if errWarmup := s.warmupStatus(); errWarmup != nil {
 		return Evaluation{}, errWarmup
 	}
+	if errInit := s.ensureInitialized(); errInit != nil {
+		return Evaluation{}, errInit
+	}
+	enrichedSchemas, errSchemas := s.schemaTable.observeAndEnrich(payload, time.Now().UTC())
+	if errSchemas != nil {
+		return Evaluation{}, errSchemas
+	}
 	pending, evaluation, errPrepare := preparePendingRecord(
 		time.Now().UTC(),
 		path,
 		requestID,
 		sessionID,
-		payload,
+		enrichedSchemas,
 	)
 	if errPrepare != nil {
 		return Evaluation{}, errPrepare
@@ -330,10 +345,6 @@ func (s *Store) RecordNative(path, requestID, sessionID string, payload []byte) 
 	if len(pending.data) == 0 {
 		return evaluation, nil
 	}
-	if errInit := s.ensureInitialized(); errInit != nil {
-		return Evaluation{}, errInit
-	}
-
 	s.stateMu.Lock()
 	if s.closed {
 		s.stateMu.Unlock()
@@ -459,6 +470,7 @@ func (s *Store) Stats(selectedMask uint8, timeRange TimeRange) (StatsView, error
 		UpdatedAt:         updatedAt,
 		Criteria:          make([]CriterionStats, 0, len(Criteria)),
 	}
+	view.ToolSchemaCount, view.ToolSchemaVersions = s.schemaTable.counts()
 	if timeRange.From != nil {
 		view.From = timeRange.From.UTC().Format(time.RFC3339)
 	}
@@ -640,6 +652,12 @@ func (s *Store) WriteZIPWithOptions(
 				_ = archive.Close()
 				return errPayload
 			}
+			payload, errPayload = s.schemaTable.enrich(payload)
+			if errPayload != nil {
+				_ = shard.Close()
+				_ = archive.Close()
+				return errPayload
+			}
 			if options.Layout == ExportLayoutContract {
 				payload, errPayload = toContractPayload(payload, options.MessageField)
 				if errPayload != nil {
@@ -706,6 +724,15 @@ func (s *Store) rawWorker() {
 					log.WithError(errDecode).Debug("skipping undecodable data integration request")
 					return
 				}
+				if errInit := s.ensureInitialized(); errInit != nil {
+					log.WithError(errInit).Warn("data integration background initialization failed")
+					return
+				}
+				payload, errDecode = s.schemaTable.observeAndEnrich(payload, raw.capturedAt)
+				if errDecode != nil {
+					log.WithError(errDecode).Debug("skipping invalid tool schema data")
+					return
+				}
 				pending, _, errPrepare := preparePendingRecord(
 					raw.capturedAt,
 					raw.path,
@@ -718,10 +745,6 @@ func (s *Store) rawWorker() {
 					return
 				}
 				if len(pending.data) == 0 {
-					return
-				}
-				if errInit := s.ensureInitialized(); errInit != nil {
-					log.WithError(errInit).Warn("data integration background initialization failed")
 					return
 				}
 				s.queue <- pending
@@ -788,6 +811,22 @@ func (s *Store) writer() {
 		}
 		statsDirty = false
 	}
+	flushSchemas := func() {
+		if errSchemas := s.schemaTable.write(s.schemaPath); errSchemas != nil {
+			log.WithError(errSchemas).Warn("failed to persist tool schema table")
+		}
+	}
+	flushSchemasAsync := func() {
+		if !s.schemaTable.isDirty() || !s.schemaWriting.CompareAndSwap(false, true) {
+			return
+		}
+		s.schemaWriteWG.Add(1)
+		go func() {
+			defer s.schemaWriteWG.Done()
+			defer s.schemaWriting.Store(false)
+			flushSchemas()
+		}()
+	}
 	handleRecord := func(record pendingRecord) {
 		if record.clear != nil {
 			flushBatch()
@@ -812,6 +851,7 @@ func (s *Store) writer() {
 			flushBatch()
 		case <-statsTicker.C:
 			flushStats()
+			flushSchemasAsync()
 		case <-s.stop:
 			for {
 				select {
@@ -820,6 +860,8 @@ func (s *Store) writer() {
 				default:
 					flushBatch()
 					flushStats()
+					s.schemaWriteWG.Wait()
+					flushSchemas()
 					return
 				}
 			}
@@ -875,6 +917,10 @@ func (s *Store) ensureInitialized() error {
 		}
 		if errMkdir := os.MkdirAll(s.dayStatsDir, 0o700); errMkdir != nil {
 			s.initErr = fmt.Errorf("create data integration stats directory: %w", errMkdir)
+			return
+		}
+		if errSchemas := s.schemaTable.load(s.schemaPath); errSchemas != nil {
+			s.initErr = errSchemas
 			return
 		}
 		s.initErr = s.loadOrRebuildStats()
