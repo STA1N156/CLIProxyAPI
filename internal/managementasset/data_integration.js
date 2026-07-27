@@ -128,6 +128,12 @@
     return Number(value || 0).toLocaleString("zh-CN");
   }
 
+  function tokenBillions(value) {
+    return (Number(value || 0) / 1000000000).toLocaleString("en-US", {
+      maximumFractionDigits: 9,
+    }) + " B";
+  }
+
   function ensureStyle() {
     if (document.getElementById("cpa-di-style")) {
       return;
@@ -177,7 +183,7 @@
       '<div class="cpa-di-card"><div class="cpa-di-summary">' +
       '<div class="cpa-di-stat"><span class="cpa-di-label">请求满足比率</span><b id="cpa-di-rate">--</b></div>' +
       '<div class="cpa-di-stat"><span class="cpa-di-label">满足 / 总请求</span><b id="cpa-di-counts">--</b></div>' +
-      '<div class="cpa-di-stat"><span class="cpa-di-label">匹配 Token 总数</span><b id="cpa-di-tokens">--</b></div>' +
+      '<div class="cpa-di-stat"><span class="cpa-di-label">匹配 Token 总数（B）</span><b id="cpa-di-tokens">--</b></div>' +
       '<div class="cpa-di-stat"><span class="cpa-di-label">后台队列</span><b id="cpa-di-queue">--</b><small id="cpa-di-dropped">未发生丢弃</small></div>' +
       '</div><div class="cpa-di-meta"><span>存储位置：<strong id="cpa-di-storage">/data</strong></span><span id="cpa-di-updated">等待读取统计</span></div></div>' +
       '<div class="cpa-di-card"><div class="cpa-di-section-head"><div><strong>筛选条件</strong><p class="cpa-di-help">已勾选条件按“同时满足”计算；不勾选则包含全部数据。</p></div><span class="cpa-di-badge" id="cpa-di-selected-count">已选 6 项</span></div><div class="cpa-di-form">' +
@@ -229,7 +235,7 @@
     document.getElementById("cpa-di-rate").textContent = percent(stats.match_rate);
     document.getElementById("cpa-di-counts").textContent =
       integer(stats.matched_requests) + " / " + integer(stats.total_requests);
-    document.getElementById("cpa-di-tokens").textContent = integer(stats.matched_tokens);
+    document.getElementById("cpa-di-tokens").textContent = tokenBillions(stats.matched_tokens);
     document.getElementById("cpa-di-queue").textContent = integer(stats.queue_depth);
     var dropped = Number(stats.dropped_requests || 0);
     document.getElementById("cpa-di-dropped").textContent =
@@ -288,7 +294,7 @@
       "/" +
       integer(stats.total_requests) +
       " 条，Token 总数 " +
-      integer(stats.matched_tokens);
+      tokenBillions(stats.matched_tokens);
   }
 
   async function loadStats() {

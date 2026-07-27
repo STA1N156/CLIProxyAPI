@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -135,8 +134,8 @@ type RecordRef struct {
 	length int
 }
 
-// Store persists requests through one bounded writer. At sustained load the
-// queue applies backpressure instead of dropping data or growing without limit.
+// Store persists requests through one bounded writer. If the bounded capture
+// queue fills, collection drops data instead of blocking proxy requests.
 type Store struct {
 	root        string
 	sessionsDir string
@@ -674,17 +673,9 @@ func (s *Store) startPipelineLocked() {
 	}
 	s.started = true
 	go s.writer()
-	workers := runtime.GOMAXPROCS(0) / 2
-	if workers < 1 {
-		workers = 1
-	}
-	if workers > 4 {
-		workers = 4
-	}
-	s.workerWG.Add(workers)
-	for index := 0; index < workers; index++ {
-		go s.rawWorker()
-	}
+	s.workerWG.Add(2)
+	go s.rawWorker()
+	go s.rawWorker()
 }
 
 func (s *Store) rawWorker() {

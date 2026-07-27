@@ -14,6 +14,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const maxCapturedBodyPreallocation = 1 << 20
+
 // DataIntegrationMiddleware copies authenticated session requests and hands
 // them to the background pipeline after the proxy handler has completed.
 func DataIntegrationMiddleware(store *dataintegration.Store) gin.HandlerFunc {
@@ -23,7 +25,7 @@ func DataIntegrationMiddleware(store *dataintegration.Store) gin.HandlerFunc {
 			return
 		}
 
-		body := &capturedRequestBody{source: c.Request.Body}
+		body := newCapturedRequestBody(c.Request.Body, c.Request.ContentLength)
 		c.Request.Body = body
 		capturedAt := time.Now().UTC()
 		path := c.Request.URL.Path
@@ -50,6 +52,14 @@ func DataIntegrationMiddleware(store *dataintegration.Store) gin.HandlerFunc {
 type capturedRequestBody struct {
 	source io.ReadCloser
 	data   bytes.Buffer
+}
+
+func newCapturedRequestBody(source io.ReadCloser, contentLength int64) *capturedRequestBody {
+	body := &capturedRequestBody{source: source}
+	if contentLength > 0 && contentLength <= maxCapturedBodyPreallocation {
+		body.data.Grow(int(contentLength))
+	}
+	return body
 }
 
 func (b *capturedRequestBody) Read(buffer []byte) (int, error) {
