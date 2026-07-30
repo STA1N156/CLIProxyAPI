@@ -58,7 +58,7 @@ func TestGetAntigravityModelsIncludesBuiltins(t *testing.T) {
 		antigravityBuiltinGemini36FlashTieredID,
 		antigravityBuiltinGemini36FlashLowID,
 		antigravityBuiltinGemini36FlashMediumID,
-		antigravityBuiltinGemini36FlashHighID,
+		antigravityGemini36FlashHighModelID,
 	} {
 		found := false
 		for _, model := range models {
@@ -71,6 +71,19 @@ func TestGetAntigravityModelsIncludesBuiltins(t *testing.T) {
 			t.Fatalf("expected Antigravity model %s", want)
 		}
 	}
+}
+
+func TestGetAntigravityModelsPreservesCatalogHighMetadata(t *testing.T) {
+	for _, model := range GetAntigravityModels() {
+		if model == nil || model.ID != antigravityGemini36FlashHighModelID {
+			continue
+		}
+		if model.Thinking == nil || model.Thinking.Min != 1 || model.Thinking.Max != 65535 {
+			t.Fatalf("high-tier thinking metadata = %#v, want catalog min=1 max=65535", model.Thinking)
+		}
+		return
+	}
+	t.Fatalf("expected Antigravity model %s", antigravityGemini36FlashHighModelID)
 }
 
 func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing.T) {

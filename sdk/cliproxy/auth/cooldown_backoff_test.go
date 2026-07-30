@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 func withQuotaCooldownEnabled(t *testing.T) {
@@ -130,7 +133,6 @@ func TestApplyAuthFailureStateQuotaFallbackAndRetryHint(t *testing.T) {
 		t.Fatalf("expected fallback window to close at %v, got %v", now.Add(5100*time.Millisecond), auth.Quota.NextRecoverAt)
 	}
 
-	// A provider supplied retry hint always takes effect, even in-window.
 	retryAfter := 10 * time.Second
 	applyAuthFailureState(auth, quotaErr, &retryAfter, now.Add(3*time.Second), false)
 	if auth.Quota.BackoffLevel != 0 {
@@ -143,26 +145,18 @@ func TestApplyAuthFailureStateQuotaFallbackAndRetryHint(t *testing.T) {
 
 func TestQuotaRetryAfterParsesGoogleQuotaResetHints(t *testing.T) {
 	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
-
 	jsonErr := &Error{
 		HTTPStatus: http.StatusTooManyRequests,
 		Message: `{
 			"error": {
 				"code": 429,
-				"message": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 48h28m30s.",
-				"status": "RESOURCE_EXHAUSTED",
+				"message": "Individual quota reached. Resets in 48h28m30s.",
 				"details": [
-					{
-						"@type": "type.googleapis.com/google.rpc.ErrorInfo",
-						"metadata": {
-							"quotaResetDelay": "48h28m30.56899813s",
-							"quotaResetTimeStamp": "2026-07-10T10:32:17Z"
-						}
-					},
-					{
-						"@type": "type.googleapis.com/google.rpc.RetryInfo",
-						"retryDelay": "174510.568998130s"
-					}
+					{"metadata": {
+						"quotaResetDelay": "48h28m30.56899813s",
+						"quotaResetTimeStamp": "2026-07-10T10:32:17Z"
+					}},
+					{"retryDelay": "174510.568998130s"}
 				]
 			}
 		}`,
@@ -184,7 +178,6 @@ func TestQuotaRetryAfterParsesGoogleQuotaResetHints(t *testing.T) {
 
 func TestMarkResultQuotaUsesResetsInCooldown(t *testing.T) {
 	withQuotaCooldownEnabled(t)
-
 	manager := NewManager(nil, nil, nil)
 	auth := &Auth{ID: "auth-quota-reset-text", Provider: "antigravity"}
 	if _, errRegister := manager.Register(WithSkipPersist(context.Background()), auth); errRegister != nil {
@@ -198,17 +191,128 @@ func TestMarkResultQuotaUsesResetsInCooldown(t *testing.T) {
 		Success:  false,
 		Error: &Error{
 			HTTPStatus: http.StatusTooManyRequests,
-			Message:    "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2m3s.",
+			Message:    "Individual quota reached. Resets in 2m3s.",
 		},
 	})
-
 	updated, ok := manager.GetByID(auth.ID)
 	if !ok || updated == nil || updated.ModelStates["gemini-3.1-pro-low"] == nil {
-		t.Fatalf("expected model state after quota failure")
+		t.Fatal("expected model state after quota failure")
 	}
 	diff := time.Until(updated.ModelStates["gemini-3.1-pro-low"].NextRetryAfter)
 	if diff < 122*time.Second || diff > 124*time.Second {
 		t.Fatalf("expected quota reset text cooldown to be ~2m3s, got %v", diff)
+	}
+}
+
+func TestRecoverableUnknownFailuresHaveFiniteCooldown(t *testing.T) {
+	withQuotaCooldownEnabled(t)
+	previousTransient := transientErrorCooldownSeconds.Load()
+	SetTransientErrorCooldownSeconds(0)
+	t.Cleanup(func() { transientErrorCooldownSeconds.Store(previousTransient) })
+
+	testCases := []struct {
+		name      string
+		model     string
+		resultErr *Error
+	}{
+		{name: "model failure without error details", model: "gpt-5"},
+		{name: "auth transport failure without status", resultErr: &Error{Message: "connection reset"}},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			manager := NewManager(nil, nil, nil)
+			auth := &Auth{ID: "auth-unknown-" + testCase.name, Provider: "codex"}
+			if _, errRegister := manager.Register(WithSkipPersist(context.Background()), auth); errRegister != nil {
+				t.Fatalf("Register returned error: %v", errRegister)
+			}
+
+			manager.MarkResult(context.Background(), Result{
+				AuthID:   auth.ID,
+				Provider: auth.Provider,
+				Model:    testCase.model,
+				Success:  false,
+				Error:    testCase.resultErr,
+			})
+
+			updated, ok := manager.GetByID(auth.ID)
+			if !ok || updated == nil {
+				t.Fatal("expected auth after failure")
+			}
+			var nextRetryAfter time.Time
+			if testCase.model == "" {
+				nextRetryAfter = updated.NextRetryAfter
+			} else {
+				state := updated.ModelStates[testCase.model]
+				if state == nil {
+					t.Fatalf("expected model state for %q", testCase.model)
+				}
+				nextRetryAfter = state.NextRetryAfter
+			}
+			if nextRetryAfter.IsZero() {
+				t.Fatal("recoverable failure has no retry deadline")
+			}
+			if blocked, _, _ := isAuthBlockedForModel(updated, testCase.model, time.Now()); !blocked {
+				t.Fatal("auth was not blocked during recoverable failure cooldown")
+			}
+			if blocked, _, _ := isAuthBlockedForModel(updated, testCase.model, nextRetryAfter.Add(time.Nanosecond)); blocked {
+				t.Fatal("auth did not automatically recover after retry deadline")
+			}
+		})
+	}
+}
+
+func TestSchedulerPromotesUnknownFailureAfterRetryDeadline(t *testing.T) {
+	withQuotaCooldownEnabled(t)
+	previousTransient := transientErrorCooldownSeconds.Load()
+	SetTransientErrorCooldownSeconds(0)
+	t.Cleanup(func() { transientErrorCooldownSeconds.Store(previousTransient) })
+
+	const (
+		provider = "gemini"
+		model    = "scheduler-unknown-recovery-model"
+		authID   = "scheduler-unknown-recovery-auth"
+	)
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient(authID, provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { modelRegistry.UnregisterClient(authID) })
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	if _, errRegister := manager.Register(WithSkipPersist(context.Background()), &Auth{ID: authID, Provider: provider}); errRegister != nil {
+		t.Fatalf("Register returned error: %v", errRegister)
+	}
+	if _, errPick := manager.scheduler.pickSingle(context.Background(), provider, model, cliproxyexecutor.Options{}, nil); errPick != nil {
+		t.Fatalf("initial scheduler pick returned error: %v", errPick)
+	}
+
+	manager.MarkResult(context.Background(), Result{
+		AuthID:   authID,
+		Provider: provider,
+		Model:    model,
+		Success:  false,
+		Error:    &Error{Message: "transport closed"},
+	})
+
+	manager.scheduler.mu.Lock()
+	defer manager.scheduler.mu.Unlock()
+	providerScheduler := manager.scheduler.providers[provider]
+	if providerScheduler == nil {
+		t.Fatalf("scheduler provider %q is missing", provider)
+	}
+	shard := providerScheduler.modelShards[model]
+	if shard == nil {
+		t.Fatalf("scheduler model shard %q is missing", model)
+	}
+	entry := shard.entries[authID]
+	if entry == nil {
+		t.Fatalf("scheduler auth %q is missing", authID)
+	}
+	if entry.state != scheduledStateBlocked || entry.nextRetryAt.IsZero() {
+		t.Fatalf("scheduler entry state = %v, retry = %v; want finite blocked state", entry.state, entry.nextRetryAt)
+	}
+
+	shard.promoteExpiredLocked(entry.nextRetryAt.Add(time.Nanosecond))
+	if entry.state != scheduledStateReady {
+		t.Fatalf("scheduler entry state after deadline = %v, want ready", entry.state)
 	}
 }
 

@@ -12,7 +12,7 @@ const (
 	antigravityBuiltinGemini36FlashTieredID    = "gemini-3.6-flash-tiered"
 	antigravityBuiltinGemini36FlashLowID       = "gemini-3.6-flash-low"
 	antigravityBuiltinGemini36FlashMediumID    = "gemini-3.6-flash-medium"
-	antigravityBuiltinGemini36FlashHighID      = "gemini-3.6-flash-high"
+	antigravityGemini36FlashHighModelID        = "gemini-3.6-flash-high"
 	codexBuiltinImage15ModelID                 = "gpt-image-1.5"
 	codexBuiltinImageModelID                   = "gpt-image-2"
 	xaiBuiltinImageModelID                     = "grok-imagine-image"
@@ -129,8 +129,8 @@ func WithXAIBuiltins(models []*ModelInfo) []*ModelInfo {
 	return upsertModelInfos(models, xaiBuiltinImageModelInfo(), xaiBuiltinImageQualityModelInfo(), xaiBuiltinVideoModelInfo(), xaiBuiltinVideo15PreviewModelInfo())
 }
 
-// WithAntigravityBuiltins keeps supported models available even when the remote
-// Antigravity catalog does not list them.
+// WithAntigravityBuiltins adds supported models that are missing from the
+// Antigravity catalog without replacing its canonical high-tier entry.
 func WithAntigravityBuiltins(models []*ModelInfo) []*ModelInfo {
 	return upsertModelInfos(models,
 		antigravityBuiltinGemini25ModelInfo(antigravityBuiltinGemini25FlashModelID, "Gemini 2.5 Flash"),
@@ -138,7 +138,6 @@ func WithAntigravityBuiltins(models []*ModelInfo) []*ModelInfo {
 		antigravityBuiltinGemini36FlashModelInfo(antigravityBuiltinGemini36FlashTieredID, "Gemini 3.6 Flash (Tiered)"),
 		antigravityBuiltinGemini36FlashModelInfo(antigravityBuiltinGemini36FlashLowID, "Gemini 3.6 Flash (Low)"),
 		antigravityBuiltinGemini36FlashModelInfo(antigravityBuiltinGemini36FlashMediumID, "Gemini 3.6 Flash (Medium)"),
-		antigravityBuiltinGemini36FlashModelInfo(antigravityBuiltinGemini36FlashHighID, "Gemini 3.6 Flash (High)"),
 	)
 }
 
