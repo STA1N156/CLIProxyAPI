@@ -209,7 +209,7 @@ func TestAntigravityBuildRequest_PreservesIndependentWebSearchRequestType(t *tes
 	}
 }
 
-func TestAntigravityBuildRequest_ClosesConnection(t *testing.T) {
+func TestAntigravityBuildRequest_KeepsConnectionAlive(t *testing.T) {
 	executor := &AntigravityExecutor{}
 	auth := &cliproxyauth.Auth{Metadata: map[string]any{"project_id": "project-1"}}
 
@@ -217,11 +217,32 @@ func TestAntigravityBuildRequest_ClosesConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRequest error: %v", err)
 	}
-	if !req.Close {
-		t.Fatal("Antigravity requests should close the upstream connection")
+	if req.Close {
+		t.Fatal("Antigravity requests should reuse the upstream connection")
 	}
-	if got := req.Header.Get("Connection"); got != "" && !strings.EqualFold(got, "close") {
-		t.Fatalf("Connection header = %q, want an empty or close header", got)
+	if got := req.Header.Get("Connection"); strings.EqualFold(got, "close") {
+		t.Fatalf("Connection header = %q, want a reusable connection", got)
+	}
+}
+
+func TestCloneAntigravityTransport_EnablesHTTP2AndConnectionPool(t *testing.T) {
+	base := &http.Transport{
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 2,
+	}
+	transport := cloneAntigravityTransport(base)
+
+	if transport == base {
+		t.Fatal("transport should be cloned")
+	}
+	if !transport.ForceAttemptHTTP2 {
+		t.Fatal("Antigravity transport should allow HTTP/2")
+	}
+	if transport.MaxIdleConns < antigravityMaxIdleConns {
+		t.Fatalf("MaxIdleConns = %d, want at least %d", transport.MaxIdleConns, antigravityMaxIdleConns)
+	}
+	if transport.MaxIdleConnsPerHost < antigravityMaxIdleConnsPerHost {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want at least %d", transport.MaxIdleConnsPerHost, antigravityMaxIdleConnsPerHost)
 	}
 }
 

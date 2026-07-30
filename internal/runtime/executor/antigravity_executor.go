@@ -5,7 +5,6 @@ package executor
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -40,6 +39,8 @@ const (
 	antigravityCreditsHintRefreshTimeout   = 5 * time.Second
 	antigravityShortQuotaCooldownThreshold = 5 * time.Minute
 	antigravityInstantRetryThreshold       = 3 * time.Second
+	antigravityMaxIdleConns                = 4096
+	antigravityMaxIdleConnsPerHost         = 1024
 	// systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
 )
 
@@ -59,7 +60,7 @@ func NewAntigravityExecutor(cfg *config.Config) *AntigravityExecutor {
 	return &AntigravityExecutor{cfg: cfg}
 }
 
-// antigravityTransport is a singleton HTTP/1.1 transport shared by all Antigravity requests.
+// antigravityTransport is a singleton transport shared by all Antigravity requests.
 // It is initialized once via antigravityTransportOnce to avoid leaking a new connection pool
 // (and the goroutines managing it) on every request.
 var (
@@ -67,50 +68,42 @@ var (
 	antigravityTransportOnce sync.Once
 )
 
-func cloneTransportWithHTTP11(base *http.Transport) *http.Transport {
+func cloneAntigravityTransport(base *http.Transport) *http.Transport {
 	if base == nil {
 		return nil
 	}
 
 	clone := base.Clone()
-	clone.ForceAttemptHTTP2 = false
-	// Wipe TLSNextProto to prevent implicit HTTP/2 upgrade.
-	clone.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
-	if clone.TLSClientConfig == nil {
-		clone.TLSClientConfig = &tls.Config{}
-	} else {
-		clone.TLSClientConfig = clone.TLSClientConfig.Clone()
-	}
-	// Actively advertise only HTTP/1.1 in the ALPN handshake.
-	clone.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	clone.ForceAttemptHTTP2 = true
+	clone.MaxIdleConns = max(clone.MaxIdleConns, antigravityMaxIdleConns)
+	clone.MaxIdleConnsPerHost = max(clone.MaxIdleConnsPerHost, antigravityMaxIdleConnsPerHost)
 	return clone
 }
 
-// initAntigravityTransport creates the shared HTTP/1.1 transport exactly once.
+// initAntigravityTransport creates the shared transport exactly once.
 func initAntigravityTransport() {
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		base = &http.Transport{}
 	}
-	antigravityTransport = cloneTransportWithHTTP11(base)
+	antigravityTransport = cloneAntigravityTransport(base)
 }
 
 // newAntigravityHTTPClient creates an HTTP client specifically for Antigravity,
-// enforcing HTTP/1.1 by disabling HTTP/2 to perfectly mimic Node.js https defaults.
 // The underlying Transport is a singleton to avoid leaking connection pools.
 func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
 	antigravityTransportOnce.Do(initAntigravityTransport)
 
 	client := helps.NewProxyAwareHTTPClient(ctx, cfg, auth, timeout)
-	// If no transport is set, use the shared HTTP/1.1 transport.
+	// If no transport is set, use the shared HTTP/2-capable transport.
 	if client.Transport == nil {
 		client.Transport = antigravityTransport
 		return client
 	}
 
-	// Preserve proxy settings from proxy-aware transports while forcing HTTP/1.1.
+	// Preserve proxy settings from proxy-aware transports while allowing HTTP/2.
 	if transport, ok := client.Transport.(*http.Transport); ok {
-		client.Transport = cloneTransportWithHTTP11(transport)
+		client.Transport = cloneAntigravityTransport(transport)
 	}
 	return client
 }
@@ -416,8 +409,6 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 	}
 	// Content-Length is managed automatically by Go's http.Client from the Body
 	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
-	httpReq.Close = true // sends Connection: close
-
 	// Inject Authorization: Bearer <token>
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, err
