@@ -67,15 +67,6 @@ func (s *Server) registerManagementRoutes() {
 
 		mgmt.POST("/api-call", s.mgmt.APICall)
 
-		mgmt.GET("/data-integration/stats", s.mgmt.GetDataIntegrationStats)
-		mgmt.GET("/data-integration/download", s.mgmt.DownloadDataIntegrationZIP)
-		mgmt.GET("/data-integration/tool-schemas", s.mgmt.ExportDataIntegrationToolSchemas)
-		mgmt.DELETE("/data-integration/tool-schemas", s.mgmt.ClearDataIntegrationToolSchemas)
-		mgmt.POST("/data-integration/tool-schemas/import", s.mgmt.ImportDataIntegrationToolSchemas)
-		mgmt.POST("/data-integration/tool-schemas/backfill", s.mgmt.BackfillDataIntegrationToolSchemas)
-		mgmt.PUT("/data-integration/tool-schemas/:name", s.mgmt.PutDataIntegrationToolSchema)
-		mgmt.DELETE("/data-integration", s.mgmt.ClearDataIntegration)
-
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)
 		mgmt.PUT("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)
 		mgmt.PATCH("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)
@@ -323,5 +314,5 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
-	c.Data(http.StatusOK, "text/html; charset=utf-8", managementasset.InjectDataIntegration(document))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", document)
 }

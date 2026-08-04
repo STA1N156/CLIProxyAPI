@@ -22,7 +22,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/dataintegration"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -65,9 +64,8 @@ type Server struct {
 	accessManager *sdkaccess.Manager
 
 	// requestLogger is the request logger instance for dynamic configuration updates.
-	requestLogger        logging.RequestLogger
-	loggerToggle         func(bool)
-	dataIntegrationStore *dataintegration.Store
+	requestLogger logging.RequestLogger
+	loggerToggle  func(bool)
 
 	// configFilePath is the absolute path to the YAML config file for persistence.
 	configFilePath string
@@ -169,34 +167,25 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	envAdminPassword = strings.TrimSpace(envAdminPassword)
 	envManagementSecret := envAdminPasswordSet && envAdminPassword != ""
 
-	dataIntegrationStore, errDataIntegration := dataintegration.NewStore("")
-	if errDataIntegration != nil {
-		log.WithError(errDataIntegration).Warn("data integration storage is unavailable")
-	} else {
-		dataIntegrationStore.StartWarmup()
-	}
-
 	// Create server instance
 	s := &Server{
-		engine:               engine,
-		handlers:             handlers.NewBaseAPIHandlers(effectiveSDKConfig(cfg), authManager),
-		cfg:                  cfg,
-		accessManager:        accessManager,
-		requestLogger:        requestLogger,
-		loggerToggle:         toggle,
-		dataIntegrationStore: dataIntegrationStore,
-		configFilePath:       configFilePath,
-		currentPath:          wd,
-		envManagementSecret:  envManagementSecret,
-		wsRoutes:             make(map[string]struct{}),
-		pluginHost:           optionState.pluginHost,
+		engine:              engine,
+		handlers:            handlers.NewBaseAPIHandlers(effectiveSDKConfig(cfg), authManager),
+		cfg:                 cfg,
+		accessManager:       accessManager,
+		requestLogger:       requestLogger,
+		loggerToggle:        toggle,
+		configFilePath:      configFilePath,
+		currentPath:         wd,
+		envManagementSecret: envManagementSecret,
+		wsRoutes:            make(map[string]struct{}),
+		pluginHost:          optionState.pluginHost,
 
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
 	s.handlers.SetPluginHost(optionState.pluginHost)
-	s.handlers.SetDataIntegrationRecorder(dataIntegrationStore)
 	if optionState.pluginHost != nil {
 		optionState.pluginHost.SetModelExecutor(s.handlers)
 		optionState.pluginHost.SetAuthManager(authManager)
@@ -215,7 +204,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
-	s.mgmt.SetDataIntegrationStore(dataIntegrationStore)
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
 	}
@@ -397,21 +385,12 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Shutdown the HTTP server before flushing the data writer so no new records
-	// are queued while the final disk batch is being committed.
 	errShutdown := s.server.Shutdown(ctx)
 	if s.codexLiveHandler != nil {
 		s.codexLiveHandler.Close()
 	}
-	var errDataIntegration error
-	if s.dataIntegrationStore != nil {
-		errDataIntegration = s.dataIntegrationStore.Close(ctx)
-	}
 	if errShutdown != nil {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", errShutdown)
-	}
-	if errDataIntegration != nil {
-		return fmt.Errorf("failed to flush data integration storage: %v", errDataIntegration)
 	}
 
 	log.Debug("API server stopped")

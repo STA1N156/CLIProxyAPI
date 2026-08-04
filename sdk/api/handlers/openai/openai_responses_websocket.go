@@ -489,10 +489,6 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			updatedLastRequest = bytes.Clone(requestJSON)
 			lastRequest = updatedLastRequest
 		}
-		if errRecord := h.RecordDataIntegrationRequest(c.Request.URL.Path, passthroughSessionID, requestJSON); errRecord != nil {
-			log.WithError(errRecord).Warn("failed to store responses websocket session")
-		}
-
 		modelName := gjson.GetBytes(requestJSON, "model").String()
 		lastAttemptedAuthID := pinnedAuthID
 		attemptedUpstreamMode := responsesWebsocketUpstreamModeUnknown
