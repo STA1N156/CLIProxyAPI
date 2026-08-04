@@ -70,6 +70,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/data-integration/stats", s.mgmt.GetDataIntegrationStats)
 		mgmt.GET("/data-integration/download", s.mgmt.DownloadDataIntegrationZIP)
 		mgmt.GET("/data-integration/tool-schemas", s.mgmt.ExportDataIntegrationToolSchemas)
+		mgmt.DELETE("/data-integration/tool-schemas", s.mgmt.ClearDataIntegrationToolSchemas)
 		mgmt.POST("/data-integration/tool-schemas/import", s.mgmt.ImportDataIntegrationToolSchemas)
 		mgmt.POST("/data-integration/tool-schemas/backfill", s.mgmt.BackfillDataIntegrationToolSchemas)
 		mgmt.PUT("/data-integration/tool-schemas/:name", s.mgmt.PutDataIntegrationToolSchema)

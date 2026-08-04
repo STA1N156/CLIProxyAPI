@@ -583,6 +583,26 @@ func (t *toolSchemaTable) counts() (int, int) {
 	return len(t.tools), versions
 }
 
+func (t *toolSchemaTable) clearAll() (int, int) {
+	if t == nil {
+		return 0, 0
+	}
+	t.mu.Lock()
+	tools := len(t.tools)
+	versions := 0
+	for _, toolVersions := range t.tools {
+		versions += len(toolVersions)
+	}
+	t.tools = make(map[string]map[string]*toolSchemaVersion)
+	t.dirty = true
+	t.mu.Unlock()
+
+	t.cacheMu.Lock()
+	clear(t.toolSets)
+	t.cacheMu.Unlock()
+	return tools, versions
+}
+
 func (t *toolSchemaTable) completeCounts() (int, int) {
 	if t == nil {
 		return 0, 0

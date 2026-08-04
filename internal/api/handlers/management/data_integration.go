@@ -87,6 +87,27 @@ func (h *Handler) ExportDataIntegrationToolSchemas(c *gin.Context) {
 	c.Data(http.StatusOK, "application/json; charset=utf-8", data)
 }
 
+// ClearDataIntegrationToolSchemas removes the registry but keeps sessions.
+func (h *Handler) ClearDataIntegrationToolSchemas(c *gin.Context) {
+	if h == nil || h.dataIntegrationStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "data integration storage is unavailable"})
+		return
+	}
+	var request struct {
+		Confirm string `json:"confirm"`
+	}
+	if errBind := c.ShouldBindJSON(&request); errBind != nil || request.Confirm != "CLEAR_ALL_TOOL_SCHEMAS" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "confirm must be CLEAR_ALL_TOOL_SCHEMAS"})
+		return
+	}
+	result, errClear := h.dataIntegrationStore.ClearToolSchemas()
+	if errClear != nil {
+		dataIntegrationSchemaError(c, errClear)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 // ImportDataIntegrationToolSchemas non-destructively merges every valid signature.
 func (h *Handler) ImportDataIntegrationToolSchemas(c *gin.Context) {
 	if h == nil || h.dataIntegrationStore == nil {

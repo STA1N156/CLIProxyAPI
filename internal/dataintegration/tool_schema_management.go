@@ -32,6 +32,12 @@ type ToolSchemaEditResult struct {
 	TotalVersions int    `json:"total_versions"`
 }
 
+// ToolSchemaClearResult describes a destructive registry reset.
+type ToolSchemaClearResult struct {
+	RemovedTools    int `json:"removed_tools"`
+	RemovedVersions int `json:"removed_versions"`
+}
+
 // ExportToolSchemas returns the complete persisted registry document.
 func (s *Store) ExportToolSchemas() ([]byte, error) {
 	if s == nil {
@@ -44,6 +50,26 @@ func (s *Store) ExportToolSchemas() ([]byte, error) {
 		return nil, errInit
 	}
 	return json.MarshalIndent(s.schemaTable.snapshot(), "", "  ")
+}
+
+// ClearToolSchemas removes every stored schema without touching sessions.
+func (s *Store) ClearToolSchemas() (ToolSchemaClearResult, error) {
+	if s == nil {
+		return ToolSchemaClearResult{}, fmt.Errorf("data integration store is unavailable")
+	}
+	if errWarmup := s.warmupStatus(); errWarmup != nil {
+		return ToolSchemaClearResult{}, errWarmup
+	}
+	if errInit := s.ensureInitialized(); errInit != nil {
+		return ToolSchemaClearResult{}, errInit
+	}
+	s.maintenanceMu.Lock()
+	defer s.maintenanceMu.Unlock()
+	tools, versions := s.schemaTable.clearAll()
+	if errWrite := s.writeToolSchemas(); errWrite != nil {
+		return ToolSchemaClearResult{}, errWrite
+	}
+	return ToolSchemaClearResult{RemovedTools: tools, RemovedVersions: versions}, nil
 }
 
 // ImportToolSchemas merges every valid signature without replacing original fields.
