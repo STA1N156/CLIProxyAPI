@@ -54,7 +54,7 @@ func translatedRequestSummaryConfig(body, currentSourcePayload, originalSourcePa
 		// Registry translation applied this field before plugin normalization. If
 		// it is absent now but can be represented on the normalized body, the
 		// normalizer deliberately removed it and must remain authoritative.
-		return thinking.SummaryConfig{}
+		return thinking.SummaryConfig{Resolved: true}
 	}
 
 	// Some intents cannot be represented until the final model-aware pass. For

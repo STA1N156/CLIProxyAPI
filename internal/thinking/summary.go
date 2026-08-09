@@ -20,8 +20,9 @@ const (
 // SummaryConfig is the provider-neutral reasoning-summary visibility intent.
 // Detail preserves protocols that distinguish auto, concise, and detailed summaries.
 type SummaryConfig struct {
-	Mode   SummaryMode
-	Detail string
+	Mode     SummaryMode
+	Detail   string
+	Resolved bool
 }
 
 // ExtractSummaryConfig reads protocol-specific summary visibility intent.

@@ -5,11 +5,53 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/antigravity"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/claude"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/codex"
+	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/gemini"
+	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/interactions"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/openai"
 	"github.com/tidwall/gjson"
 )
+
+func TestApplyThinkingWithModelInfoDefaultsActiveThinkingVisible(t *testing.T) {
+	tests := []struct {
+		name     string
+		from     string
+		to       string
+		provider string
+		body     string
+		source   string
+		path     string
+		want     string
+	}{
+		{name: "Gemini", from: "gemini", to: "gemini", provider: "gemini", body: `{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}`, source: `{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}`, path: "generationConfig.thinkingConfig.includeThoughts", want: "true"},
+		{name: "Antigravity", from: "gemini", to: "antigravity", provider: "antigravity", body: `{"request":{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}}`, source: `{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}`, path: "request.generationConfig.thinkingConfig.includeThoughts", want: "true"},
+		{name: "Claude", from: "claude", to: "claude", provider: "claude", body: `{"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`, source: `{"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`, path: "thinking.display", want: "summarized"},
+		{name: "Interactions", from: "interactions", to: "interactions", provider: "interactions", body: `{"generation_config":{"thinking_level":"high"}}`, source: `{"generation_config":{"thinking_level":"high"}}`, path: "generation_config.thinking_summaries", want: "auto"},
+		{name: "Responses Codex", from: "openai-response", to: "codex", provider: "codex", body: `{"reasoning":{"effort":"high"}}`, source: `{"reasoning":{"effort":"high"}}`, path: "reasoning.summary", want: "auto"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			modelInfo := &registry.ModelInfo{
+				ID:       "visible-thinking-model",
+				Type:     tc.provider,
+				Thinking: &registry.ThinkingSupport{Levels: []string{"low", "high"}},
+			}
+			out, err := thinking.ApplyThinkingWithModelInfo(
+				[]byte(tc.body), []byte(tc.source), "visible-thinking-model",
+				tc.from, tc.to, tc.provider, modelInfo,
+			)
+			if err != nil {
+				t.Fatalf("ApplyThinkingWithModelInfo() error = %v", err)
+			}
+			if got := gjson.GetBytes(out, tc.path).String(); got != tc.want {
+				t.Fatalf("%s = %q, want %q; body=%s", tc.path, got, tc.want, out)
+			}
+		})
+	}
+}
 
 func TestApplyThinkingWithModelInfoMapsCrossFamilyHighIntent(t *testing.T) {
 	tests := []struct {

@@ -163,7 +163,7 @@ func IsUserDefinedModel(modelInfo *registry.ModelInfo) bool {
 //	result, err := thinking.ApplyThinking(body, "gemini-2.5-pro", "gemini", "gemini", "gemini")
 func ApplyThinking(body []byte, model string, fromFormat string, toFormat string, providerKey string) ([]byte, error) {
 	summaryConfig := ExtractSummaryConfig(body, toFormat)
-	return applyThinking(body, nil, model, fromFormat, toFormat, providerKey, nil, false, summaryConfig)
+	return applyThinking(body, nil, model, fromFormat, toFormat, providerKey, nil, false, summaryConfig, false)
 }
 
 // ApplyThinkingWithSummary applies canonical thinking effort while preserving
@@ -172,7 +172,7 @@ func ApplyThinking(body []byte, model string, fromFormat string, toFormat string
 // a target Claude body can temporarily lack display while disabled thinking is
 // being rewritten by a model suffix.
 func ApplyThinkingWithSummary(body []byte, model string, fromFormat string, toFormat string, providerKey string, summaryConfig SummaryConfig) ([]byte, error) {
-	return applyThinking(body, nil, model, fromFormat, toFormat, providerKey, nil, false, summaryConfig)
+	return applyThinking(body, nil, model, fromFormat, toFormat, providerKey, nil, false, summaryConfig, summaryConfig.Resolved)
 }
 
 // ApplyThinkingWithModelInfo applies thinking with the exact configured model
@@ -183,17 +183,17 @@ func ApplyThinkingWithModelInfo(body, sourceBody []byte, model string, fromForma
 	if len(sourceBody) == 0 {
 		summaryConfig = ExtractSummaryConfig(body, toFormat)
 	}
-	return ApplyThinkingWithModelInfoAndSummary(body, sourceBody, model, fromFormat, toFormat, providerKey, modelInfo, summaryConfig)
+	return applyThinking(body, sourceBody, model, fromFormat, toFormat, providerKey, modelInfo, true, summaryConfig, false)
 }
 
 // ApplyThinkingWithModelInfoAndSummary applies the exact configured model
 // definition with a summary intent already resolved across source translation
 // and plugin normalization.
 func ApplyThinkingWithModelInfoAndSummary(body, sourceBody []byte, model string, fromFormat string, toFormat string, providerKey string, modelInfo *registry.ModelInfo, summaryConfig SummaryConfig) ([]byte, error) {
-	return applyThinking(body, sourceBody, model, fromFormat, toFormat, providerKey, modelInfo, true, summaryConfig)
+	return applyThinking(body, sourceBody, model, fromFormat, toFormat, providerKey, modelInfo, true, summaryConfig, true)
 }
 
-func applyThinking(body, sourceBody []byte, model string, fromFormat string, toFormat string, providerKey string, resolvedModelInfo *registry.ModelInfo, modelInfoResolved bool, summaryConfig SummaryConfig) ([]byte, error) {
+func applyThinking(body, sourceBody []byte, model string, fromFormat string, toFormat string, providerKey string, resolvedModelInfo *registry.ModelInfo, modelInfoResolved bool, summaryConfig SummaryConfig, summaryConfigResolved bool) ([]byte, error) {
 	providerFormat := strings.ToLower(strings.TrimSpace(toFormat))
 	if modelInfoResolved && providerFormat == "openai-response" {
 		providerFormat = "codex"
@@ -232,7 +232,7 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 	// Unknown models are treated as user-defined so thinking config can still be applied.
 	// The upstream service is responsible for validating the configuration.
 	if IsUserDefinedModel(modelInfo) {
-		return applyUserDefinedModel(body, modelInfo, fromFormat, providerFormat, providerKey, suffixResult, summaryConfig)
+		return applyUserDefinedModel(body, modelInfo, fromFormat, providerFormat, providerKey, suffixResult, summaryConfig, summaryConfigResolved)
 	}
 	if modelInfo.Thinking == nil {
 		config := extractThinkingConfig(body, providerFormat)
@@ -331,6 +331,7 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 		"budget":   validated.Budget,
 		"level":    validated.Level,
 	}).Debug("thinking: processed config to apply |")
+	summaryConfig = defaultSummaryConfig(*validated, summaryConfig, summaryConfigResolved)
 
 	// 6. Apply configuration using provider-specific applier, then restore the
 	// target summary intent that was explicit before suffix processing.
@@ -349,6 +350,16 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 
 func thinkingIsFullyDisabled(config ThinkingConfig) bool {
 	return config.Mode == ModeNone && config.Budget == 0 && config.Level == ""
+}
+
+func defaultSummaryConfig(config ThinkingConfig, summaryConfig SummaryConfig, summaryConfigResolved bool) SummaryConfig {
+	if summaryConfig.Mode != SummaryUnspecified || summaryConfigResolved {
+		return summaryConfig
+	}
+	if config.Mode == ModeNone {
+		return SummaryConfig{Mode: SummaryDisabled}
+	}
+	return SummaryConfig{Mode: SummaryEnabled, Detail: "auto"}
 }
 
 func shouldMapConfiguredHighIntent(fromFormat, toFormat string, modelInfo *registry.ModelInfo) bool {
@@ -437,7 +448,7 @@ func parseSuffixToConfig(rawSuffix, provider, model string) ThinkingConfig {
 
 // applyUserDefinedModel applies thinking configuration for user-defined models
 // without ThinkingSupport validation.
-func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromFormat, toFormat, providerKey string, suffixResult SuffixResult, summaryConfig SummaryConfig) ([]byte, error) {
+func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromFormat, toFormat, providerKey string, suffixResult SuffixResult, summaryConfig SummaryConfig, summaryConfigResolved bool) ([]byte, error) {
 	// Get model ID for logging
 	modelID := ""
 	if modelInfo != nil {
@@ -491,6 +502,7 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 	}
 
 	config = normalizeUserDefinedConfig(config, fromFormat, toFormat)
+	summaryConfig = defaultSummaryConfig(config, summaryConfig, summaryConfigResolved)
 	log.WithFields(log.Fields{
 		"provider": toFormat,
 		"model":    modelID,

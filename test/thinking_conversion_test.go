@@ -3504,15 +3504,11 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 				if tc.to == "antigravity" {
 					path = "request.generationConfig.thinkingConfig.includeThoughts"
 				}
-				// Each case declares its expected visibility independently from the
-				// extractor under test. Empty means the provider field must be absent.
+				// Non-empty values declare an explicit visibility expectation. Default
+				// visibility is covered by focused thinking pipeline tests.
 				wantIncludeThoughts := tc.includeThoughts
 				itVal := gjson.GetBytes(body, path)
-				if wantIncludeThoughts == "" {
-					if itVal.Exists() {
-						t.Fatalf("includeThoughts should be absent without summary intent, body=%s", string(body))
-					}
-				} else {
+				if wantIncludeThoughts != "" {
 					if !itVal.Exists() {
 						t.Fatalf("expected includeThoughts field not found, body=%s", string(body))
 					}
