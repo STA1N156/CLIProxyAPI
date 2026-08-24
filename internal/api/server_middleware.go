@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
@@ -32,6 +33,43 @@ const (
 	exampleAPIKeyManagementPath = "/management.html"
 	exampleAPIKeyManagementURL  = "/management.html?safe-mode=configure"
 )
+
+func realtimeAuthMiddleware(manager *sdkaccess.Manager, handler *codexlive.Handler) gin.HandlerFunc {
+	fallback := realtimeStandardAuthMiddleware(manager)
+	return func(c *gin.Context) {
+		authorization, matched, errAuthenticate := handler.AuthenticateClientSecret(c.Request)
+		if !matched {
+			fallback(c)
+			return
+		}
+		if errAuthenticate != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": gin.H{
+				"message": errAuthenticate.Error(),
+				"type":    "invalid_request_error",
+				"param":   nil,
+				"code":    "invalid_realtime_client_secret",
+			}})
+			return
+		}
+		principal := authorization.IssuerPrincipal
+		if principal == "" {
+			principal = authorization.Principal
+		}
+		provider := authorization.IssuerProvider
+		if provider == "" {
+			provider = "realtime-client-secret"
+		}
+		c.Set("userApiKey", principal)
+		c.Set("accessProvider", provider)
+		c.Set(codexlive.ClientSecretSessionContextKey, authorization.Session)
+		c.Set(codexlive.ClientSecretPrincipalContextKey, authorization.Principal)
+		c.Next()
+	}
+}
+
+func realtimeStandardAuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
+	return accessAuthMiddleware(manager, true)
+}
 
 func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -145,6 +183,10 @@ func corsMiddleware() gin.HandlerFunc {
 // using the configured authentication providers. When no providers are available,
 // it allows all requests (legacy behaviour).
 func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
+	return accessAuthMiddleware(manager, false)
+}
+
+func accessAuthMiddleware(manager *sdkaccess.Manager, realtimeError bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if manager == nil {
 			c.Next()
@@ -167,6 +209,21 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 		statusCode := err.HTTPStatusCode()
 		if statusCode >= http.StatusInternalServerError {
 			log.Errorf("authentication middleware error: %v", err)
+		}
+		if realtimeError {
+			errorType := "authentication_error"
+			code := "invalid_api_key"
+			if statusCode >= http.StatusInternalServerError {
+				errorType = "server_error"
+				code = "authentication_service_error"
+			}
+			c.AbortWithStatusJSON(statusCode, gin.H{"error": gin.H{
+				"message": err.Message,
+				"type":    errorType,
+				"param":   nil,
+				"code":    code,
+			}})
+			return
 		}
 		c.AbortWithStatusJSON(statusCode, gin.H{"error": err.Message})
 	}
