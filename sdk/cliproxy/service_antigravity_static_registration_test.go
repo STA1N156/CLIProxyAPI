@@ -72,6 +72,7 @@ func TestRegisterModelsForAuthBatch_AntigravityStaticModelsSurviveCanceledContex
 	for _, want := range []string{
 		"gemini-2.5-flash",
 		"gemini-2.5-flash-lite",
+		"gemini-3.5-flash-lite",
 		"gemini-3.6-flash-tiered",
 		"gemini-3.6-flash-low",
 		"gemini-3.6-flash-medium",

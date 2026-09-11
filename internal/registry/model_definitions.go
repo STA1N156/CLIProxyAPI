@@ -9,6 +9,7 @@ import (
 const (
 	antigravityBuiltinGemini25FlashModelID     = "gemini-2.5-flash"
 	antigravityBuiltinGemini25FlashLiteModelID = "gemini-2.5-flash-lite"
+	antigravityBuiltinGemini35FlashLiteModelID = "gemini-3.5-flash-lite"
 	antigravityBuiltinGemini36FlashTieredID    = "gemini-3.6-flash-tiered"
 	antigravityBuiltinGemini36FlashLowID       = "gemini-3.6-flash-low"
 	antigravityBuiltinGemini36FlashMediumID    = "gemini-3.6-flash-medium"
@@ -137,6 +138,7 @@ func WithAntigravityBuiltins(models []*ModelInfo) []*ModelInfo {
 	return upsertModelInfos(models,
 		antigravityBuiltinGemini25ModelInfo(antigravityBuiltinGemini25FlashModelID, "Gemini 2.5 Flash"),
 		antigravityBuiltinGemini25ModelInfo(antigravityBuiltinGemini25FlashLiteModelID, "Gemini 2.5 Flash Lite"),
+		antigravityBuiltinGemini35FlashLiteModelInfo(),
 		antigravityBuiltinGemini36FlashModelInfo(antigravityBuiltinGemini36FlashTieredID, "Gemini 3.6 Flash (Tiered)"),
 		antigravityBuiltinGemini36FlashModelInfo(antigravityBuiltinGemini36FlashLowID, "Gemini 3.6 Flash (Low)"),
 		antigravityBuiltinGemini36FlashModelInfo(antigravityBuiltinGemini36FlashMediumID, "Gemini 3.6 Flash (Medium)"),
@@ -158,6 +160,26 @@ func antigravityBuiltinGemini25ModelInfo(id, displayName string) *ModelInfo {
 			Max:            24576,
 			ZeroAllowed:    true,
 			DynamicAllowed: true,
+		},
+	}
+}
+
+func antigravityBuiltinGemini35FlashLiteModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:                  antigravityBuiltinGemini35FlashLiteModelID,
+		Object:              "model",
+		OwnedBy:             "antigravity",
+		Type:                "antigravity",
+		DisplayName:         "Gemini 3.5 Flash Lite",
+		Name:                antigravityBuiltinGemini35FlashLiteModelID,
+		Description:         "Gemini 3.5 Flash Lite",
+		ContextLength:       1048576,
+		MaxCompletionTokens: 65536,
+		Thinking: &ThinkingSupport{
+			Min:            128,
+			Max:            32768,
+			DynamicAllowed: true,
+			Levels:         []string{"minimal", "low", "medium", "high"},
 		},
 	}
 }

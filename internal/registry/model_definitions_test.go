@@ -85,6 +85,7 @@ func TestGetAntigravityModelsIncludesBuiltins(t *testing.T) {
 	for _, want := range []string{
 		antigravityBuiltinGemini25FlashModelID,
 		antigravityBuiltinGemini25FlashLiteModelID,
+		antigravityBuiltinGemini35FlashLiteModelID,
 		antigravityBuiltinGemini36FlashTieredID,
 		antigravityBuiltinGemini36FlashLowID,
 		antigravityBuiltinGemini36FlashMediumID,
