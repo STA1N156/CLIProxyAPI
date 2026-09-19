@@ -159,6 +159,7 @@ attemptLoop:
 				}
 				helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
 				if httpResp.StatusCode == http.StatusTooManyRequests {
+					cliproxyauth.ObserveAntigravityQuota429(ctx, bodyBytes)
 					decision := decideAntigravity429(bodyBytes)
 
 					switch decision.kind {

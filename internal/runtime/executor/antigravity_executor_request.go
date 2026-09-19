@@ -57,6 +57,9 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		return nil, errProject
 	}
 	payload = geminiToAntigravity(modelName, payload, projectID, derivedSessionIDs...)
+	if cliproxyauth.AntigravityQuotaFallbackEnabled(ctx) {
+		payload = helps.MoveAntigravitySystemInstructionToUser(payload)
+	}
 
 	// Cap maxOutputTokens to model's max_completion_tokens from registry
 	if maxOut := gjson.GetBytes(payload, "request.generationConfig.maxOutputTokens"); maxOut.Exists() && maxOut.Type == gjson.Number {
