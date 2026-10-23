@@ -16,15 +16,13 @@ import (
 )
 
 const (
-	// antigravityFallbackVersion is the client version reported when the hub
-	// manifest has not been fetched yet or cannot be reached. Cloud Code rejects
-	// newer models for clients below 2.9.0, so this floor must stay at or above
-	// that version.
+	// antigravityFallbackVersion is retained for legacy Hub version lookups.
+	// Request headers use the fixed CLI identity below.
 	antigravityFallbackVersion = "2.9.1"
-	antigravityHubPlatform     = "darwin/arm64"
+	antigravityCLIVersion      = "1.4.5"
+	antigravityCLIPlatform     = "windows/amd64"
 	antigravityVersionCacheTTL = 6 * time.Hour
 	antigravityFetchTimeout    = 10 * time.Second
-	AntigravityNodeAPIClientUA = "google-api-nodejs-client/10.3.0"
 	AntigravityGoogAPIClientUA = "gl-node/22.21.1"
 )
 
@@ -112,9 +110,9 @@ func AntigravityLatestVersion() string {
 	return antigravityFallbackVersion
 }
 
-// AntigravityUserAgent returns the User-Agent string used by the Antigravity Hub family.
+// AntigravityUserAgent returns the fixed Antigravity CLI User-Agent.
 func AntigravityUserAgent() string {
-	return fmt.Sprintf("antigravity/hub/%s %s", AntigravityLatestVersion(), antigravityHubPlatform)
+	return fmt.Sprintf("antigravity/cli/%s %s", antigravityCLIVersion, antigravityCLIPlatform)
 }
 
 func isAntigravityFamilyUserAgent(lower string) bool {
@@ -150,21 +148,9 @@ func AntigravityLoadCodeAssistUserAgent(userAgent string) string {
 	return AntigravityRequestUserAgent(userAgent)
 }
 
-// AntigravityOnboardUserUserAgent returns the long Antigravity control-plane UA
-// used by onboardUser requests.
+// AntigravityOnboardUserUserAgent uses the same CLI identity for onboardUser requests.
 func AntigravityOnboardUserUserAgent(userAgent string) string {
-	userAgent = strings.TrimSpace(userAgent)
-	if userAgent == "" {
-		return AntigravityUserAgent() + " " + AntigravityNodeAPIClientUA
-	}
-	lower := strings.ToLower(userAgent)
-	if !isAntigravityFamilyUserAgent(lower) {
-		return userAgent
-	}
-	if strings.Contains(lower, "google-api-nodejs-client/") {
-		return userAgent
-	}
-	return antigravityBaseUserAgent(userAgent) + " " + AntigravityNodeAPIClientUA
+	return AntigravityRequestUserAgent(userAgent)
 }
 
 // AntigravityVersionFromUserAgent extracts the Antigravity version prefix from
@@ -172,30 +158,16 @@ func AntigravityOnboardUserUserAgent(userAgent string) string {
 func AntigravityVersionFromUserAgent(userAgent string) string {
 	base := antigravityBaseUserAgent(userAgent)
 	lower := strings.ToLower(base)
-	if strings.HasPrefix(lower, "antigravity/hub/") {
-		rest := base[len("antigravity/hub/"):]
-		if idx := strings.IndexAny(rest, " 	"); idx >= 0 {
-			rest = rest[:idx]
+	for _, prefix := range []string{"antigravity/cli/", "antigravity/hub/", "antigravity/"} {
+		if !strings.HasPrefix(lower, prefix) {
+			continue
 		}
-		rest = strings.TrimSpace(rest)
-		if rest == "" {
-			return AntigravityLatestVersion()
+		if fields := strings.Fields(base[len(prefix):]); len(fields) > 0 {
+			return fields[0]
 		}
-		return rest
+		break
 	}
-	const legacyPrefix = "antigravity/"
-	if !strings.HasPrefix(lower, legacyPrefix) {
-		return AntigravityLatestVersion()
-	}
-	rest := base[len(legacyPrefix):]
-	if idx := strings.IndexAny(rest, " 	"); idx >= 0 {
-		rest = rest[:idx]
-	}
-	rest = strings.TrimSpace(rest)
-	if rest == "" {
-		return AntigravityLatestVersion()
-	}
-	return rest
+	return antigravityCLIVersion
 }
 
 func fetchAntigravityLatestVersion(ctx context.Context) (string, error) {

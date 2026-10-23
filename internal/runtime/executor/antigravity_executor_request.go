@@ -396,7 +396,7 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 func geminiToAntigravity(modelName string, payload []byte, projectID string, derivedSessionIDs ...string) []byte {
 	template := payload
 	template = helps.SetStringIfDifferent(template, "model", modelName)
-	template = helps.SetStringIfDifferent(template, "userAgent", "antigravity")
+	template, _ = sjson.DeleteBytes(template, "userAgent")
 
 	isImageModel := strings.Contains(modelName, "image")
 	reqType := strings.TrimSpace(gjson.GetBytes(template, "requestType").String())

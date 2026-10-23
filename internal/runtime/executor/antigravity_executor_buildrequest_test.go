@@ -402,6 +402,7 @@ func assertNonSchemaRequestPreserved(t *testing.T, body map[string]any) {
 func buildRequestBodyFromPayload(t *testing.T, modelName string) map[string]any {
 	t.Helper()
 	return buildRequestBodyFromRawPayload(t, modelName, []byte(`{
+		"userAgent": "client-provided",
 		"request": {
 			"tools": [
 				{
@@ -452,8 +453,14 @@ func buildRequestBodyFromRawPayload(t *testing.T, modelName string, payload []by
 	if err != nil {
 		t.Fatalf("buildRequest error: %v", err)
 	}
-
-	return requestBody(t, req)
+	if got := req.Header.Get("User-Agent"); got != "antigravity/cli/1.4.5 windows/amd64" {
+		t.Fatalf("User-Agent = %q", got)
+	}
+	body := requestBody(t, req)
+	if _, exists := body["userAgent"]; exists {
+		t.Fatal("request body must not contain userAgent")
+	}
+	return body
 }
 
 func requestBody(t *testing.T, req *http.Request) map[string]any {
