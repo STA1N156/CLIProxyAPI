@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
@@ -269,7 +270,7 @@ func TestAntigravityPrepareRequestAuth_FetchesMissingProjectID(t *testing.T) {
 		"expired":      time.Now().Add(1 * time.Hour).Format(time.RFC3339),
 	}}
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.String() != "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
+		if req.URL.String() != "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
 			t.Fatalf("unexpected project discovery request: %s", req.URL.String())
 		}
 		if got := req.Header.Get("X-Goog-Api-Client"); got != "" {
@@ -453,12 +454,12 @@ func buildRequestBodyFromRawPayload(t *testing.T, modelName string, payload []by
 	if err != nil {
 		t.Fatalf("buildRequest error: %v", err)
 	}
-	if got := req.Header.Get("User-Agent"); got != "antigravity/cli/1.4.5 windows/amd64" {
+	if got := req.Header.Get("User-Agent"); got != misc.AntigravityUserAgent() {
 		t.Fatalf("User-Agent = %q", got)
 	}
 	body := requestBody(t, req)
-	if _, exists := body["userAgent"]; exists {
-		t.Fatal("request body must not contain userAgent")
+	if body["userAgent"] != "antigravity" {
+		t.Fatal("request body must identify antigravity")
 	}
 	return body
 }

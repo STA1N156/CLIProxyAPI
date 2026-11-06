@@ -987,7 +987,7 @@ func flattenAnyOfOneOf(jsonStr string) string {
 			items := arr.Array()
 			bestIdx, allTypes := selectBest(items)
 			selected := items[bestIdx].Raw
-			hasNull := false
+			hasNull := gjson.Get(jsonStr, joinPath(parentPath, "nullable")).Bool()
 			for _, item := range items {
 				if item.Get("type").String() == "null" {
 					hasNull = true

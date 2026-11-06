@@ -175,9 +175,8 @@ func sanitizeAntigravityRequestSchemas(payloadStr string, useAntigravitySchema b
 		payloadStr = renamed
 	}
 
-	toolSchemaCleaner := util.CleanJSONSchemaForGemini
-	if useAntigravitySchema {
-		toolSchemaCleaner = util.CleanJSONSchemaForAntigravity
+	toolSchemaCleaner := func(schema string) string {
+		return util.CleanJSONSchemaForAntigravityTool(schema, useAntigravitySchema)
 	}
 	responseSchemaCleaner := util.CleanJSONSchemaForAntigravityResponse
 
@@ -320,10 +319,7 @@ func buildBaseURL(auth *cliproxyauth.Auth) string {
 }
 
 func antigravityLoadCodeAssistBaseURL(auth *cliproxyauth.Auth) string {
-	if base := resolveCustomAntigravityBaseURL(auth); base != "" {
-		return base
-	}
-	return antigravityBaseURLProd
+	return buildBaseURL(auth)
 }
 
 func resolveHost(base string) string {
@@ -366,11 +362,7 @@ var antigravityBaseURLFallbackOrder = func(auth *cliproxyauth.Auth) []string {
 	if base := resolveCustomAntigravityBaseURL(auth); base != "" {
 		return []string{base}
 	}
-	return []string{
-		antigravityBaseURLDaily,
-		antigravityBaseURLProd,
-		// antigravitySandboxBaseURLDaily,
-	}
+	return []string{antigravityBaseURLDaily}
 }
 
 func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
@@ -394,9 +386,9 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 }
 
 func geminiToAntigravity(modelName string, payload []byte, projectID string, derivedSessionIDs ...string) []byte {
-	template := payload
+	template := bytes.Clone(payload)
 	template = helps.SetStringIfDifferent(template, "model", modelName)
-	template, _ = sjson.DeleteBytes(template, "userAgent")
+	template = helps.SetStringIfDifferent(template, "userAgent", "antigravity")
 
 	isImageModel := strings.Contains(modelName, "image")
 	reqType := strings.TrimSpace(gjson.GetBytes(template, "requestType").String())

@@ -15,7 +15,6 @@ import (
 
 const (
 	antigravityModelBaseURLDaily = "https://daily-cloudcode-pa.googleapis.com"
-	antigravityModelBaseURLProd  = "https://cloudcode-pa.googleapis.com"
 	antigravityModelsPath        = "/v1internal:fetchAvailableModels"
 )
 
@@ -90,7 +89,7 @@ func antigravityModelBaseURLs(auth *coreauth.Auth) []string {
 	if baseURL := resolveAntigravityModelBaseURL(auth); baseURL != "" {
 		return []string{baseURL}
 	}
-	return []string{antigravityModelBaseURLDaily, antigravityModelBaseURLProd}
+	return []string{antigravityModelBaseURLDaily}
 }
 
 func resolveAntigravityModelBaseURL(auth *coreauth.Auth) string {

@@ -38,10 +38,8 @@ import (
 )
 
 const (
-	antigravityBaseURLDaily        = "https://daily-cloudcode-pa.googleapis.com"
-	antigravitySandboxBaseURLDaily = "https://daily-cloudcode-pa.sandbox.googleapis.com"
-	antigravityBaseURLProd         = "https://cloudcode-pa.googleapis.com"
-	antigravityModelsPath          = "/v1internal:fetchAvailableModels"
+	antigravityBaseURLDaily = "https://daily-cloudcode-pa.googleapis.com"
+	antigravityModelsPath   = "/v1internal:fetchAvailableModels"
 )
 
 func init() {
@@ -196,7 +194,7 @@ func fetchModels(ctx context.Context, auth *coreauth.Auth) []modelEntry {
 		return nil
 	}
 
-	baseURLs := []string{antigravityBaseURLProd, antigravityBaseURLDaily, antigravitySandboxBaseURLDaily}
+	baseURLs := []string{antigravityBaseURLDaily}
 
 	for _, baseURL := range baseURLs {
 		modelsURL := baseURL + antigravityModelsPath

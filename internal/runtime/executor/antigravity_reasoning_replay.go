@@ -20,6 +20,7 @@ import (
 	internalsignature "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -100,17 +101,27 @@ func antigravityReasoningReplayScopeFromRequest(ctx context.Context, modelName s
 	// Prefer an explicit downstream session over a provider sessionId synthesized
 	// from request text. This keeps identical prompts in separate client sessions
 	// from sharing an opaque Gemini reasoning chain.
+	var scope antigravityReasoningReplayScope
 	if sessionKey := antigravityReasoningReplayClientSessionKey(ctx, req, opts); sessionKey != "" {
-		return antigravityReasoningReplayScope{modelName: modelName, sessionKey: sessionKey}
+		scope = antigravityReasoningReplayScope{modelName: modelName, sessionKey: sessionKey}
+	} else {
+		scope = antigravityReasoningReplayScopeFromPayload(modelName, payload)
+		if !scope.valid() {
+			scope = antigravityReasoningReplayScopeFromPayload(modelName, req.Payload)
+		}
 	}
-	if scope := antigravityReasoningReplayScopeFromPayload(modelName, payload); scope.valid() {
-		return scope
+	callerScope := metadataString(opts.Metadata, cliproxyexecutor.CallerScopeMetadataKey)
+	if callerScope == "" {
+		callerScope = metadataString(req.Metadata, cliproxyexecutor.CallerScopeMetadataKey)
 	}
-	if scope := antigravityReasoningReplayScopeFromPayload(modelName, req.Payload); scope.valid() {
-		return scope
+	if callerScope == "" {
+		callerScope = session.CallerScope(helps.APIKeyFromContext(ctx))
 	}
-	_ = ctx
-	return antigravityReasoningReplayScope{}
+	if scope.valid() && callerScope != "" {
+		sum := sha256.Sum256([]byte(callerScope))
+		scope.sessionKey = "caller:" + hex.EncodeToString(sum[:]) + ":" + scope.sessionKey
+	}
+	return scope
 }
 
 func antigravityReasoningReplayClientSessionKey(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) string {
@@ -1825,11 +1836,34 @@ func (a *antigravityReasoningReplayAccumulator) ObserveSSELine(line []byte) {
 	a.observeResponsePayload(payload)
 }
 
+func (a *antigravityReasoningReplayAccumulator) claimPrecedingTurnThoughtSignature() string {
+	for _, rawItem := range a.items {
+		item := gjson.ParseBytes(rawItem)
+		if item.Get("type").String() == "function_call_part" && int(item.Get("contentIndex").Int()) == a.contentIndex && strings.TrimSpace(item.Get("thoughtSignature").String()) != "" {
+			return ""
+		}
+	}
+	for i := len(a.items) - 1; i >= 0; i-- {
+		item := gjson.ParseBytes(a.items[i])
+		if item.Get("type").String() == "thought_signature" && int(item.Get("contentIndex").Int()) == a.contentIndex && item.Get("targetKind").String() == "thought" {
+			if sig := strings.TrimSpace(item.Get("thoughtSignature").String()); sig != "" {
+				return sig
+			}
+		}
+	}
+	return ""
+}
+
 func (a *antigravityReasoningReplayAccumulator) observeResponsePayload(payload []byte) {
 	if finishReason := strings.TrimSpace(gjson.GetBytes(payload, "response.candidates.0.finishReason").String()); finishReason != "" {
 		a.terminal = true
+	} else if finishReason := strings.TrimSpace(gjson.GetBytes(payload, "candidates.0.finishReason").String()); finishReason != "" {
+		a.terminal = true
 	}
 	parts := gjson.GetBytes(payload, "response.candidates.0.content.parts")
+	if !parts.IsArray() {
+		parts = gjson.GetBytes(payload, "candidates.0.content.parts")
+	}
 	if !parts.IsArray() {
 		return
 	}
@@ -1863,6 +1897,9 @@ func (a *antigravityReasoningReplayAccumulator) observeResponsePayload(payload [
 				}
 			}
 			keys := antigravityReplayToolCallKeysFromPart(fc)
+			if signature == "" {
+				signature = a.claimPrecedingTurnThoughtSignature()
+			}
 			for _, key := range keys {
 				dedupeKey := key + "\x00" + signature
 				if signature == "" {
@@ -2116,7 +2153,13 @@ func cacheAntigravityReasoningReplayFromResponse(ctx context.Context, scope anti
 		return
 	}
 	acc := newAntigravityReasoningReplayAccumulator(scope, requestPayload)
+	if acc == nil {
+		return
+	}
 	acc.observeResponsePayload(body)
+	if !acc.terminal && (gjson.GetBytes(body, "response.candidates.0").Exists() || gjson.GetBytes(body, "candidates.0").Exists()) {
+		acc.terminal = true
+	}
 	acc.Commit(ctx)
 }
 

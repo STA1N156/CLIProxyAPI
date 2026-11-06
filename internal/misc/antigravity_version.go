@@ -16,19 +16,25 @@ import (
 )
 
 const (
-	// antigravityFallbackVersion is retained for legacy Hub version lookups.
-	// Request headers use the fixed CLI identity below.
-	antigravityFallbackVersion = "2.9.1"
-	antigravityCLIVersion      = "1.4.5"
-	antigravityCLIPlatform     = "windows/amd64"
+	// Used until the Hub manifest has been fetched, or when its cache expires.
+	antigravityFallbackVersion = "2.29.0"
+	antigravityHubPlatform     = "os_type=darwin; arch=arm64"
 	antigravityVersionCacheTTL = 6 * time.Hour
 	antigravityFetchTimeout    = 10 * time.Second
+	AntigravityNodeAPIClientUA = "google-api-nodejs-client/10.3.0"
 	AntigravityGoogAPIClientUA = "gl-node/22.21.1"
 )
 
 var (
 	antigravityHubLatestManifestURL = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml"
 )
+
+// Changelists identify specific Hub releases and must not be reused for unknown versions.
+var antigravityHubChangelists = map[string]string{
+	"2.23.0": "998057262",
+	"2.24.0": "1000335682",
+	"2.29.0": "1013060670",
+}
 
 type antigravityHubUpdaterManifest struct {
 	Version string `yaml:"version"`
@@ -110,9 +116,14 @@ func AntigravityLatestVersion() string {
 	return antigravityFallbackVersion
 }
 
-// AntigravityUserAgent returns the fixed Antigravity CLI User-Agent.
+// AntigravityUserAgent returns the current Antigravity Hub identity.
 func AntigravityUserAgent() string {
-	return fmt.Sprintf("antigravity/cli/%s %s", antigravityCLIVersion, antigravityCLIPlatform)
+	version := AntigravityLatestVersion()
+	metadata := "aidev_client; " + antigravityHubPlatform
+	if changelist := antigravityHubChangelists[version]; changelist != "" {
+		metadata += "; cl=" + changelist
+	}
+	return fmt.Sprintf("antigravity/hub/%s (%s)", version, metadata)
 }
 
 func isAntigravityFamilyUserAgent(lower string) bool {
@@ -148,9 +159,17 @@ func AntigravityLoadCodeAssistUserAgent(userAgent string) string {
 	return AntigravityRequestUserAgent(userAgent)
 }
 
-// AntigravityOnboardUserUserAgent uses the same CLI identity for onboardUser requests.
+// AntigravityOnboardUserUserAgent includes the control-plane client identity.
 func AntigravityOnboardUserUserAgent(userAgent string) string {
-	return AntigravityRequestUserAgent(userAgent)
+	userAgent = strings.TrimSpace(userAgent)
+	if userAgent == "" {
+		return AntigravityUserAgent() + " " + AntigravityNodeAPIClientUA
+	}
+	lower := strings.ToLower(userAgent)
+	if !isAntigravityFamilyUserAgent(lower) || strings.Contains(lower, "google-api-nodejs-client/") {
+		return userAgent
+	}
+	return antigravityBaseUserAgent(userAgent) + " " + AntigravityNodeAPIClientUA
 }
 
 // AntigravityVersionFromUserAgent extracts the Antigravity version prefix from
@@ -167,7 +186,7 @@ func AntigravityVersionFromUserAgent(userAgent string) string {
 		}
 		break
 	}
-	return antigravityCLIVersion
+	return AntigravityLatestVersion()
 }
 
 func fetchAntigravityLatestVersion(ctx context.Context) (string, error) {
