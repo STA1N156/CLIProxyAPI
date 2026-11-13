@@ -18,6 +18,7 @@ import (
 const (
 	// Used until the Hub manifest has been fetched, or when its cache expires.
 	antigravityFallbackVersion = "2.29.0"
+	antigravityHubPlatform     = "os_type=darwin; arch=arm64"
 	antigravityVersionCacheTTL = 6 * time.Hour
 	antigravityFetchTimeout    = 10 * time.Second
 	AntigravityNodeAPIClientUA = "google-api-nodejs-client/10.3.0"
@@ -27,6 +28,13 @@ const (
 var (
 	antigravityHubLatestManifestURL = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml"
 )
+
+// Changelists identify specific Hub releases and must not be reused for unknown versions.
+var antigravityHubChangelists = map[string]string{
+	"2.23.0": "998057262",
+	"2.24.0": "1000335682",
+	"2.29.0": "1013060670",
+}
 
 type antigravityHubUpdaterManifest struct {
 	Version string `yaml:"version"`
@@ -108,9 +116,14 @@ func AntigravityLatestVersion() string {
 	return antigravityFallbackVersion
 }
 
-// AntigravityUserAgent returns the default Antigravity identity.
+// AntigravityUserAgent returns the current Antigravity Hub identity.
 func AntigravityUserAgent() string {
-	return "antigravity/1.5.8 darwin/arm64"
+	version := AntigravityLatestVersion()
+	metadata := "aidev_client; " + antigravityHubPlatform
+	if changelist := antigravityHubChangelists[version]; changelist != "" {
+		metadata += "; cl=" + changelist
+	}
+	return fmt.Sprintf("antigravity/hub/%s (%s)", version, metadata)
 }
 
 func isAntigravityFamilyUserAgent(lower string) bool {
@@ -146,11 +159,11 @@ func AntigravityLoadCodeAssistUserAgent(userAgent string) string {
 	return AntigravityRequestUserAgent(userAgent)
 }
 
-// AntigravityOnboardUserUserAgent preserves configured control-plane identities.
+// AntigravityOnboardUserUserAgent includes the control-plane client identity.
 func AntigravityOnboardUserUserAgent(userAgent string) string {
 	userAgent = strings.TrimSpace(userAgent)
 	if userAgent == "" {
-		return AntigravityUserAgent()
+		return AntigravityUserAgent() + " " + AntigravityNodeAPIClientUA
 	}
 	lower := strings.ToLower(userAgent)
 	if !isAntigravityFamilyUserAgent(lower) || strings.Contains(lower, "google-api-nodejs-client/") {
