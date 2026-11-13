@@ -392,12 +392,10 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
 
 	isImageModel := strings.Contains(modelName, "image")
 	reqType := strings.TrimSpace(gjson.GetBytes(template, "requestType").String())
-	if reqType == "" {
-		if isImageModel {
-			reqType = "image_gen"
-		} else {
-			reqType = "agent"
-		}
+	if reqType == "agent" {
+		template, _ = sjson.DeleteBytes(template, "requestType")
+	} else if reqType == "" && isImageModel {
+		reqType = "image_gen"
 		template, _ = sjson.SetBytes(template, "requestType", reqType)
 	}
 
