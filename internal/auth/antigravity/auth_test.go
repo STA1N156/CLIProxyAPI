@@ -85,7 +85,7 @@ func assertLoadCodeAssistHeaders(t *testing.T, req *http.Request) {
 		t.Fatalf("X-Goog-Api-Client = %q, want empty", got)
 	}
 	userAgent := req.Header.Get("User-Agent")
-	if !strings.HasPrefix(userAgent, "antigravity/hub/") {
+	if userAgent != "antigravity/1.5.8 darwin/arm64" {
 		t.Fatalf("User-Agent = %q", userAgent)
 	}
 }
@@ -102,7 +102,7 @@ func assertOnboardUserHeaders(t *testing.T, req *http.Request) {
 		t.Fatalf("X-Goog-Api-Client = %q", got)
 	}
 	userAgent := req.Header.Get("User-Agent")
-	if !strings.HasPrefix(userAgent, "antigravity/hub/") || !strings.HasSuffix(userAgent, " google-api-nodejs-client/10.3.0") {
+	if userAgent != "antigravity/1.5.8 darwin/arm64" {
 		t.Fatalf("User-Agent = %q", userAgent)
 	}
 }
