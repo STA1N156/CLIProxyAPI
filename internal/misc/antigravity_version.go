@@ -3,6 +3,7 @@ package misc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,13 +13,12 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v3"
 )
 
 const (
-	// Used until the Hub manifest has been fetched, or when its cache expires.
-	antigravityFallbackVersion = "2.29.0"
-	antigravityHubPlatform     = "os_type=darwin; arch=arm64"
+	// Used until the CLI manifest has been fetched, or when its cache expires.
+	antigravityFallbackVersion = "1.5.9"
+	antigravityCLIPlatform     = "darwin/arm64"
 	antigravityVersionCacheTTL = 6 * time.Hour
 	antigravityFetchTimeout    = 10 * time.Second
 	AntigravityNodeAPIClientUA = "google-api-nodejs-client/10.3.0"
@@ -26,18 +26,11 @@ const (
 )
 
 var (
-	antigravityHubLatestManifestURL = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml"
+	antigravityCLILatestManifestURL = "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/darwin_arm64.json"
 )
 
-// Changelists identify specific Hub releases and must not be reused for unknown versions.
-var antigravityHubChangelists = map[string]string{
-	"2.23.0": "998057262",
-	"2.24.0": "1000335682",
-	"2.29.0": "1013060670",
-}
-
-type antigravityHubUpdaterManifest struct {
-	Version string `yaml:"version"`
+type antigravityCLIUpdaterManifest struct {
+	Version string `json:"version"`
 }
 
 var (
@@ -116,18 +109,13 @@ func AntigravityLatestVersion() string {
 	return antigravityFallbackVersion
 }
 
-// AntigravityUserAgent returns the current Antigravity Hub identity.
+// AntigravityUserAgent returns the current Antigravity CLI identity.
 func AntigravityUserAgent() string {
-	version := AntigravityLatestVersion()
-	metadata := "aidev_client; " + antigravityHubPlatform
-	if changelist := antigravityHubChangelists[version]; changelist != "" {
-		metadata += "; cl=" + changelist
-	}
-	return fmt.Sprintf("antigravity/hub/%s (%s)", version, metadata)
+	return fmt.Sprintf("antigravity/cli/%s %s", AntigravityLatestVersion(), antigravityCLIPlatform)
 }
 
 func isAntigravityFamilyUserAgent(lower string) bool {
-	return strings.HasPrefix(lower, "antigravity/hub/") || strings.HasPrefix(lower, "antigravity/")
+	return strings.HasPrefix(lower, "antigravity/cli/") || strings.HasPrefix(lower, "antigravity/hub/") || strings.HasPrefix(lower, "antigravity/")
 }
 
 func antigravityBaseUserAgent(userAgent string) string {
@@ -195,47 +183,47 @@ func fetchAntigravityLatestVersion(ctx context.Context) (string, error) {
 	}
 
 	client := &http.Client{Timeout: antigravityFetchTimeout}
-	return fetchAntigravityHubLatestManifestVersion(ctx, client)
+	return fetchAntigravityCLILatestManifestVersion(ctx, client)
 }
 
-func fetchAntigravityHubLatestManifestVersion(ctx context.Context, client *http.Client) (string, error) {
-	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodGet, antigravityHubLatestManifestURL, nil)
+func fetchAntigravityCLILatestManifestVersion(ctx context.Context, client *http.Client) (string, error) {
+	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodGet, antigravityCLILatestManifestURL, nil)
 	if errReq != nil {
-		return "", fmt.Errorf("build antigravity Hub updater manifest request: %w", errReq)
+		return "", fmt.Errorf("build antigravity CLI updater manifest request: %w", errReq)
 	}
-	httpReq.Header.Set("User-Agent", "electron-builder")
+	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("Cache-Control", "no-cache")
 
 	resp, errDo := client.Do(httpReq)
 	if errDo != nil {
-		return "", fmt.Errorf("fetch antigravity Hub updater manifest: %w", errDo)
+		return "", fmt.Errorf("fetch antigravity CLI updater manifest: %w", errDo)
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
-			log.WithError(errClose).Warn("antigravity Hub updater manifest response body close error")
+			log.WithError(errClose).Warn("antigravity CLI updater manifest response body close error")
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("antigravity Hub updater manifest returned status %d", resp.StatusCode)
+		return "", fmt.Errorf("antigravity CLI updater manifest returned status %d", resp.StatusCode)
 	}
 
 	raw, errRead := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if errRead != nil {
-		return "", fmt.Errorf("read antigravity Hub updater manifest: %w", errRead)
+		return "", fmt.Errorf("read antigravity CLI updater manifest: %w", errRead)
 	}
 
-	var manifest antigravityHubUpdaterManifest
-	if errDecode := yaml.Unmarshal(raw, &manifest); errDecode != nil {
-		return "", fmt.Errorf("decode antigravity Hub updater manifest: %w", errDecode)
+	var manifest antigravityCLIUpdaterManifest
+	if errDecode := json.Unmarshal(raw, &manifest); errDecode != nil {
+		return "", fmt.Errorf("decode antigravity CLI updater manifest: %w", errDecode)
 	}
 
 	version := strings.TrimSpace(manifest.Version)
 	if version == "" {
-		return "", errors.New("antigravity Hub updater manifest returned empty version")
+		return "", errors.New("antigravity CLI updater manifest returned empty version")
 	}
 	if !isValidAntigravitySemVersion(version) {
-		return "", fmt.Errorf("antigravity Hub updater manifest returned invalid version %q", version)
+		return "", fmt.Errorf("antigravity CLI updater manifest returned invalid version %q", version)
 	}
 	return version, nil
 }

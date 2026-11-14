@@ -5,11 +5,13 @@ package executor
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
@@ -18,6 +20,7 @@ import (
 	internalsignature "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	antigravityclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/antigravity/claude"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -38,8 +41,6 @@ const (
 	antigravityCreditsHintRefreshTimeout   = 5 * time.Second
 	antigravityShortQuotaCooldownThreshold = 5 * time.Minute
 	antigravityInstantRetryThreshold       = 3 * time.Second
-	antigravityMaxIdleConns                = 4096
-	antigravityMaxIdleConnsPerHost         = 1024
 	// systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
 )
 
@@ -74,51 +75,181 @@ func ensureAntigravityGeminiLeadingUserContent(modelName string, payload []byte)
 	return helps.EnsureGeminiLeadingUserContent(payload, "request.contents")
 }
 
-// antigravityTransport is a singleton transport shared by all Antigravity requests.
-// It is initialized once via antigravityTransportOnce to avoid leaking a new connection pool
-// (and the goroutines managing it) on every request.
+// Each Antigravity credential gets its own HTTP/1.1 connection pool. Sessions routed
+// to the same auth reuse that pool, while different OAuth identities never share a
+// TCP/TLS connection, matching the native client's one-credential process model.
+// The cache is bounded so pools cannot accumulate when keys churn.
 var (
-	antigravityTransport     *http.Transport
-	antigravityTransportOnce sync.Once
+	antigravityBaseTransport = defaultAntigravityBaseTransport()
+	antigravityTransports    = helps.NewTransportCache[antigravityTransportKey](antigravityTransportCacheCapacity)
 )
 
-func cloneAntigravityTransport(base *http.Transport) *http.Transport {
+const (
+	antigravityTransportCacheCapacity  = 8192
+	antigravityMaxIdleConnsPerHost     = 100
+	antigravityIdleConnTimeout         = 210 * time.Second
+	antigravityAnonymousTransportScope = "anonymous"
+)
+
+type antigravityTransportKey struct {
+	credential string
+	proxy      string
+	base       *http.Transport
+}
+
+func defaultAntigravityBaseTransport() *http.Transport {
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok && transport != nil {
+		return transport
+	}
+	return &http.Transport{}
+}
+
+func cloneTransportWithHTTP11(base *http.Transport) *http.Transport {
 	if base == nil {
 		return nil
 	}
 
 	clone := base.Clone()
-	clone.ForceAttemptHTTP2 = true
-	clone.MaxIdleConns = max(clone.MaxIdleConns, antigravityMaxIdleConns)
-	clone.MaxIdleConnsPerHost = max(clone.MaxIdleConnsPerHost, antigravityMaxIdleConnsPerHost)
+	clone.ForceAttemptHTTP2 = false
+	// Wipe TLSNextProto to prevent implicit HTTP/2 upgrade.
+	clone.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
+	if clone.TLSClientConfig == nil {
+		clone.TLSClientConfig = &tls.Config{}
+	} else {
+		clone.TLSClientConfig = clone.TLSClientConfig.Clone()
+	}
+	// Native Antigravity sends no ALPN extension. With HTTP/2 disabled above,
+	// an empty NextProtos keeps the wire shape aligned while using HTTP/1.1.
+	clone.TLSClientConfig.NextProtos = nil
+	applyAntigravityPoolLimits(clone)
 	return clone
 }
 
-// initAntigravityTransport creates the shared transport exactly once.
-func initAntigravityTransport() {
-	base, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		base = &http.Transport{}
+// applyAntigravityPoolLimits widens the connection pool so keep-alive actually
+// survives concurrency and idle periods. Limits are only ever raised, so an
+// operator-supplied base transport with a larger pool keeps its own settings.
+func applyAntigravityPoolLimits(transport *http.Transport) {
+	if transport == nil {
+		return
 	}
-	antigravityTransport = cloneAntigravityTransport(base)
+	if transport.MaxIdleConnsPerHost >= 0 && transport.MaxIdleConnsPerHost < antigravityMaxIdleConnsPerHost {
+		transport.MaxIdleConnsPerHost = antigravityMaxIdleConnsPerHost
+	}
+	if transport.MaxIdleConns > 0 && transport.MaxIdleConns < transport.MaxIdleConnsPerHost {
+		transport.MaxIdleConns = transport.MaxIdleConnsPerHost
+	}
+	if transport.IdleConnTimeout > 0 && transport.IdleConnTimeout < antigravityIdleConnTimeout {
+		transport.IdleConnTimeout = antigravityIdleConnTimeout
+	}
+}
+
+func antigravityHTTP11Transport(auth *cliproxyauth.Auth, base *http.Transport) *http.Transport {
+	if base == nil {
+		return nil
+	}
+	key := antigravityTransportKey{
+		credential: antigravityTransportScope(auth),
+		base:       base,
+	}
+	transport, errGet := antigravityTransports.Get(key, func() (*http.Transport, error) {
+		return cloneTransportWithHTTP11(base), nil
+	})
+	if errGet != nil {
+		log.Debugf("antigravity executor: cache HTTP/1.1 transport failed: %v", errGet)
+		return cloneTransportWithHTTP11(base)
+	}
+	return transport
+}
+
+func antigravityProxiedHTTP11Transport(auth *cliproxyauth.Auth, proxyURL string) *http.Transport {
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return nil
+	}
+	key := antigravityTransportKey{
+		credential: antigravityTransportScope(auth),
+		proxy:      proxyURL,
+	}
+	transport, errGet := antigravityTransports.Get(key, func() (*http.Transport, error) {
+		base, _, errBuild := proxyutil.BuildHTTPTransport(proxyURL)
+		if errBuild != nil {
+			return nil, errBuild
+		}
+		if base == nil {
+			return nil, fmt.Errorf("antigravity executor: proxy setting produced no transport")
+		}
+		return cloneTransportWithHTTP11(base), nil
+	})
+	if errGet != nil {
+		return nil
+	}
+	return transport
+}
+
+func antigravityTransportScope(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return antigravityAnonymousTransportScope
+	}
+	if id := strings.TrimSpace(auth.ID); id != "" {
+		return "id:" + id
+	}
+	if auth.Attributes != nil {
+		if path := strings.TrimSpace(auth.Attributes[cliproxyauth.AttributePath]); path != "" {
+			return "path:" + path
+		}
+		if source := strings.TrimSpace(auth.Attributes[cliproxyauth.AttributeSource]); source != "" {
+			return "source:" + source
+		}
+	}
+	if refresh := strings.TrimSpace(metaStringValue(auth.Metadata, "refresh_token")); refresh != "" {
+		return antigravityCredentialScope("refresh:", refresh)
+	}
+	if access := strings.TrimSpace(metaStringValue(auth.Metadata, "access_token")); access != "" {
+		return antigravityCredentialScope("token:", access)
+	}
+	return antigravityAnonymousTransportScope
+}
+
+func antigravityCredentialScope(prefix, secret string) string {
+	digest := sha256.Sum256([]byte(secret))
+	return prefix + hex.EncodeToString(digest[:8])
+}
+
+func antigravityProxyURL(cfg *config.Config, auth *cliproxyauth.Auth) string {
+	if auth != nil {
+		if proxyURL := strings.TrimSpace(auth.ProxyURL); proxyURL != "" {
+			return proxyURL
+		}
+	}
+	if cfg != nil {
+		return strings.TrimSpace(cfg.ProxyURL)
+	}
+	return ""
 }
 
 // newAntigravityHTTPClient creates an HTTP client specifically for Antigravity,
-// The underlying Transport is a singleton to avoid leaking connection pools.
+// enforcing HTTP/1.1 by disabling HTTP/2 and ALPN to match the native client.
 func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
-	antigravityTransportOnce.Do(initAntigravityTransport)
+	if proxyURL := antigravityProxyURL(cfg, auth); proxyURL != "" {
+		if transport := antigravityProxiedHTTP11Transport(auth, proxyURL); transport != nil {
+			return &http.Client{Transport: transport, Timeout: timeout}
+		}
+	}
 
 	client := helps.NewProxyAwareHTTPClient(ctx, cfg, auth, timeout)
-	// If no transport is set, use the shared HTTP/2-capable transport.
 	if client.Transport == nil {
-		client.Transport = antigravityTransport
+		client.Transport = antigravityHTTP11Transport(auth, antigravityBaseTransport)
 		return client
 	}
 
-	// Preserve proxy settings from proxy-aware transports while allowing HTTP/2.
-	if transport, ok := client.Transport.(*http.Transport); ok {
-		client.Transport = cloneAntigravityTransport(transport)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		return client
 	}
+	if transport == nil {
+		transport = antigravityBaseTransport
+	}
+	client.Transport = antigravityHTTP11Transport(auth, transport)
 	return client
 }
 

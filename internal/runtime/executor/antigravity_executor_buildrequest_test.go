@@ -236,21 +236,21 @@ func TestAntigravityBuildRequest_KeepsConnectionAlive(t *testing.T) {
 	}
 }
 
-func TestCloneAntigravityTransport_EnablesHTTP2AndConnectionPool(t *testing.T) {
+func TestCloneTransportWithHTTP11_DisablesHTTP2AndSetsPoolLimits(t *testing.T) {
 	base := &http.Transport{
 		MaxIdleConns:        10,
 		MaxIdleConnsPerHost: 2,
 	}
-	transport := cloneAntigravityTransport(base)
+	transport := cloneTransportWithHTTP11(base)
 
 	if transport == base {
 		t.Fatal("transport should be cloned")
 	}
-	if !transport.ForceAttemptHTTP2 {
-		t.Fatal("Antigravity transport should allow HTTP/2")
+	if transport.ForceAttemptHTTP2 {
+		t.Fatal("Antigravity transport must not attempt HTTP/2")
 	}
-	if transport.MaxIdleConns < antigravityMaxIdleConns {
-		t.Fatalf("MaxIdleConns = %d, want at least %d", transport.MaxIdleConns, antigravityMaxIdleConns)
+	if transport.MaxIdleConns < antigravityMaxIdleConnsPerHost {
+		t.Fatalf("MaxIdleConns = %d, want at least %d", transport.MaxIdleConns, antigravityMaxIdleConnsPerHost)
 	}
 	if transport.MaxIdleConnsPerHost < antigravityMaxIdleConnsPerHost {
 		t.Fatalf("MaxIdleConnsPerHost = %d, want at least %d", transport.MaxIdleConnsPerHost, antigravityMaxIdleConnsPerHost)
