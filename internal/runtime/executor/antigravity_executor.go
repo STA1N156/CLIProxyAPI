@@ -6,7 +6,6 @@ package executor
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	internalsignature "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	antigravityclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/antigravity/claude"
@@ -109,25 +109,11 @@ func cloneTransportWithHTTP11(base *http.Transport) *http.Transport {
 		return nil
 	}
 
-	clone := base.Clone()
-	clone.ForceAttemptHTTP2 = false
-	// Wipe TLSNextProto to prevent implicit HTTP/2 upgrade.
-	clone.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
-	if clone.TLSClientConfig == nil {
-		clone.TLSClientConfig = &tls.Config{}
-	} else {
-		clone.TLSClientConfig = clone.TLSClientConfig.Clone()
-	}
-	// Native Antigravity sends no ALPN extension. With HTTP/2 disabled above,
-	// an empty NextProtos keeps the wire shape aligned while using HTTP/1.1.
-	clone.TLSClientConfig.NextProtos = nil
+	clone := misc.CloneAntigravityTransport(base)
 	applyAntigravityPoolLimits(clone)
 	return clone
 }
 
-// applyAntigravityPoolLimits widens the connection pool so keep-alive actually
-// survives concurrency and idle periods. Limits are only ever raised, so an
-// operator-supplied base transport with a larger pool keeps its own settings.
 func applyAntigravityPoolLimits(transport *http.Transport) {
 	if transport == nil {
 		return
@@ -138,7 +124,7 @@ func applyAntigravityPoolLimits(transport *http.Transport) {
 	if transport.MaxIdleConns > 0 && transport.MaxIdleConns < transport.MaxIdleConnsPerHost {
 		transport.MaxIdleConns = transport.MaxIdleConnsPerHost
 	}
-	if transport.IdleConnTimeout > 0 && transport.IdleConnTimeout < antigravityIdleConnTimeout {
+	if transport.IdleConnTimeout <= 0 || transport.IdleConnTimeout > antigravityIdleConnTimeout {
 		transport.IdleConnTimeout = antigravityIdleConnTimeout
 	}
 }
@@ -228,7 +214,7 @@ func antigravityProxyURL(cfg *config.Config, auth *cliproxyauth.Auth) string {
 }
 
 // newAntigravityHTTPClient creates an HTTP client specifically for Antigravity,
-// enforcing HTTP/1.1 by disabling HTTP/2 and ALPN to match the native client.
+// enforcing the native CLI's HTTP/1.1 ALPN profile.
 func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
 	if proxyURL := antigravityProxyURL(cfg, auth); proxyURL != "" {
 		if transport := antigravityProxiedHTTP11Transport(auth, proxyURL); transport != nil {
@@ -251,6 +237,10 @@ func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cli
 	}
 	client.Transport = antigravityHTTP11Transport(auth, transport)
 	return client
+}
+
+func NewAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
+	return newAntigravityHTTPClient(ctx, cfg, auth, timeout)
 }
 
 func sanitizeAntigravityGeminiRequestSignatures(modelName string, rawJSON []byte) []byte {

@@ -77,8 +77,8 @@ func TestNewAntigravityHTTPClientSharesTransport(t *testing.T) {
 			if transport.TLSClientConfig == nil {
 				t.Fatal("Antigravity transport must carry an explicit TLS config")
 			}
-			if len(transport.TLSClientConfig.NextProtos) != 0 {
-				t.Fatalf("Antigravity must omit ALPN like the native client, got %v", transport.TLSClientConfig.NextProtos)
+			if len(transport.TLSClientConfig.NextProtos) != 1 || transport.TLSClientConfig.NextProtos[0] != "http/1.1" {
+				t.Fatalf("Antigravity ALPN must be http/1.1, got %v", transport.TLSClientConfig.NextProtos)
 			}
 			// Go's DefaultMaxIdleConnsPerHost of 2 would force concurrent sessions on one
 			// credential to re-handshake. The native Antigravity stack raises it to 100.
@@ -88,36 +88,32 @@ func TestNewAntigravityHTTPClientSharesTransport(t *testing.T) {
 			if transport.MaxIdleConns > 0 && transport.MaxIdleConns < transport.MaxIdleConnsPerHost {
 				t.Fatalf("MaxIdleConns = %d must not throttle MaxIdleConnsPerHost = %d", transport.MaxIdleConns, transport.MaxIdleConnsPerHost)
 			}
-			if transport.IdleConnTimeout > 0 && transport.IdleConnTimeout < antigravityIdleConnTimeout {
-				t.Fatalf("IdleConnTimeout = %v, want >= %v", transport.IdleConnTimeout, antigravityIdleConnTimeout)
+			if transport.IdleConnTimeout <= 0 || transport.IdleConnTimeout > antigravityIdleConnTimeout {
+				t.Fatalf("IdleConnTimeout = %v, want within %v", transport.IdleConnTimeout, antigravityIdleConnTimeout)
 			}
 		})
 	}
 }
 
-// TestAntigravityPoolLimitsOnlyWiden guards that an operator-supplied base transport
-// with a larger pool keeps its own settings, and that "unlimited" sentinels are not
-// narrowed into finite limits.
-func TestAntigravityPoolLimitsOnlyWiden(t *testing.T) {
+func TestAntigravityPoolLimitsCapIdleTimeout(t *testing.T) {
 	wide := &http.Transport{
 		MaxIdleConns:        512,
 		MaxIdleConnsPerHost: 256,
 		IdleConnTimeout:     time.Hour,
 	}
 	applyAntigravityPoolLimits(wide)
-	if wide.MaxIdleConnsPerHost != 256 || wide.MaxIdleConns != 512 || wide.IdleConnTimeout != time.Hour {
+	if wide.MaxIdleConnsPerHost != 256 || wide.MaxIdleConns != 512 || wide.IdleConnTimeout != antigravityIdleConnTimeout {
 		t.Fatalf("wider pool settings must be preserved, got perHost=%d total=%d idle=%v",
 			wide.MaxIdleConnsPerHost, wide.MaxIdleConns, wide.IdleConnTimeout)
 	}
 
-	// Zero means unlimited for both MaxIdleConns and IdleConnTimeout.
 	unlimited := &http.Transport{MaxIdleConns: 0, IdleConnTimeout: 0}
 	applyAntigravityPoolLimits(unlimited)
 	if unlimited.MaxIdleConns != 0 {
 		t.Fatalf("MaxIdleConns = %d, want 0 (unlimited) to stay unlimited", unlimited.MaxIdleConns)
 	}
-	if unlimited.IdleConnTimeout != 0 {
-		t.Fatalf("IdleConnTimeout = %v, want 0 (never expire) to stay unlimited", unlimited.IdleConnTimeout)
+	if unlimited.IdleConnTimeout != antigravityIdleConnTimeout {
+		t.Fatalf("IdleConnTimeout = %v, want %v", unlimited.IdleConnTimeout, antigravityIdleConnTimeout)
 	}
 
 	// A negative MaxIdleConnsPerHost is how an operator disables idle pooling; Go never
@@ -154,8 +150,8 @@ func TestNewAntigravityHTTPClientRejectsTypedNilContextTransport(t *testing.T) {
 	if transport.ForceAttemptHTTP2 {
 		t.Fatal("fallback transport must not attempt HTTP/2")
 	}
-	if len(transport.TLSClientConfig.NextProtos) != 0 {
-		t.Fatalf("fallback transport must omit ALPN, got %v", transport.TLSClientConfig.NextProtos)
+	if len(transport.TLSClientConfig.NextProtos) != 1 || transport.TLSClientConfig.NextProtos[0] != "http/1.1" {
+		t.Fatalf("fallback transport ALPN must be http/1.1, got %v", transport.TLSClientConfig.NextProtos)
 	}
 }
 
@@ -507,8 +503,8 @@ func TestAntigravityTransportMatchesNativeTLSProfile(t *testing.T) {
 		t.Fatalf("close response body: %v", errClose)
 	}
 
-	if len(clientHelloProtos) != 0 {
-		t.Fatalf("ClientHello ALPN = %v, want no ALPN extension", clientHelloProtos)
+	if len(clientHelloProtos) != 1 || clientHelloProtos[0] != "http/1.1" {
+		t.Fatalf("ClientHello ALPN = %v, want http/1.1", clientHelloProtos)
 	}
 	if requestProto != "HTTP/1.1" {
 		t.Fatalf("request protocol = %q, want HTTP/1.1", requestProto)
@@ -516,8 +512,8 @@ func TestAntigravityTransportMatchesNativeTLSProfile(t *testing.T) {
 	if tlsVersion != tls.VersionTLS13 {
 		t.Fatalf("TLS version = %#x, want TLS 1.3", tlsVersion)
 	}
-	if negotiatedProtocol != "" {
-		t.Fatalf("negotiated ALPN = %q, want empty", negotiatedProtocol)
+	if negotiatedProtocol != "http/1.1" {
+		t.Fatalf("negotiated ALPN = %q, want http/1.1", negotiatedProtocol)
 	}
 }
 

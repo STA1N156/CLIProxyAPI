@@ -40,12 +40,16 @@ func NewAntigravityAuth(cfg *config.Config, httpClient *http.Client) *Antigravit
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	if httpClient != nil {
-		return &AntigravityAuth{httpClient: httpClient}
+	if httpClient == nil {
+		httpClient = util.SetProxy(&cfg.SDKConfig, &http.Client{})
 	}
-	return &AntigravityAuth{
-		httpClient: util.SetProxy(&cfg.SDKConfig, &http.Client{}),
+	client := *httpClient
+	if client.Transport == nil {
+		client.Transport = misc.CloneAntigravityTransport(nil)
+	} else if transport, ok := client.Transport.(*http.Transport); ok {
+		client.Transport = misc.CloneAntigravityTransport(transport)
 	}
+	return &AntigravityAuth{httpClient: &client}
 }
 
 func (o *AntigravityAuth) shortUserAgent() string {
@@ -189,7 +193,6 @@ func (o *AntigravityAuth) FetchUserInfo(ctx context.Context, accessToken string)
 		return "", fmt.Errorf("antigravity userinfo: create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("User-Agent", o.shortUserAgent())
 
 	resp, errDo := o.httpClient.Do(req)
 	if errDo != nil {
@@ -316,10 +319,8 @@ func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID s
 			return "", fmt.Errorf("create request: %w", errRequest)
 		}
 		req.Header.Set("Authorization", "Bearer "+accessToken)
-		req.Header.Set("Accept", "*/*")
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", userAgent)
-		req.Header.Set("X-Goog-Api-Client", misc.AntigravityGoogAPIClientUA)
 
 		resp, errDo := o.httpClient.Do(req)
 		if errDo != nil {

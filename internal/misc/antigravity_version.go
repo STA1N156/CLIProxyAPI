@@ -18,15 +18,13 @@ import (
 const (
 	// Used until the CLI manifest has been fetched, or when its cache expires.
 	antigravityFallbackVersion = "1.5.9"
-	antigravityCLIPlatform     = "darwin/arm64"
+	antigravityCLIPlatform     = "os_type=windows; arch=amd64"
 	antigravityVersionCacheTTL = 6 * time.Hour
 	antigravityFetchTimeout    = 10 * time.Second
-	AntigravityNodeAPIClientUA = "google-api-nodejs-client/10.3.0"
-	AntigravityGoogAPIClientUA = "gl-node/22.21.1"
 )
 
 var (
-	antigravityCLILatestManifestURL = "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/darwin_arm64.json"
+	antigravityCLILatestManifestURL = "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/windows_amd64.json"
 )
 
 type antigravityCLIUpdaterManifest struct {
@@ -111,7 +109,12 @@ func AntigravityLatestVersion() string {
 
 // AntigravityUserAgent returns the current Antigravity CLI identity.
 func AntigravityUserAgent() string {
-	return fmt.Sprintf("antigravity/cli/%s %s", AntigravityLatestVersion(), antigravityCLIPlatform)
+	version := AntigravityLatestVersion()
+	metadata := "aidev_client; " + antigravityCLIPlatform
+	if version == "1.5.9" {
+		metadata += "; cl=1021519450"
+	}
+	return fmt.Sprintf("antigravity/cli/%s (%s; auth_method=consumer; datacollection_opt_in=false; host_path=unknown/unknown)", version, metadata)
 }
 
 func isAntigravityFamilyUserAgent(lower string) bool {
@@ -147,17 +150,9 @@ func AntigravityLoadCodeAssistUserAgent(userAgent string) string {
 	return AntigravityRequestUserAgent(userAgent)
 }
 
-// AntigravityOnboardUserUserAgent includes the control-plane client identity.
+// AntigravityOnboardUserUserAgent returns the CLI identity used for onboarding.
 func AntigravityOnboardUserUserAgent(userAgent string) string {
-	userAgent = strings.TrimSpace(userAgent)
-	if userAgent == "" {
-		return AntigravityUserAgent() + " " + AntigravityNodeAPIClientUA
-	}
-	lower := strings.ToLower(userAgent)
-	if !isAntigravityFamilyUserAgent(lower) || strings.Contains(lower, "google-api-nodejs-client/") {
-		return userAgent
-	}
-	return antigravityBaseUserAgent(userAgent) + " " + AntigravityNodeAPIClientUA
+	return antigravityBaseUserAgent(userAgent)
 }
 
 // AntigravityVersionFromUserAgent extracts the Antigravity version prefix from
@@ -182,7 +177,7 @@ func fetchAntigravityLatestVersion(ctx context.Context) (string, error) {
 		ctx = context.Background()
 	}
 
-	client := &http.Client{Timeout: antigravityFetchTimeout}
+	client := &http.Client{Timeout: antigravityFetchTimeout, Transport: CloneAntigravityTransport(nil)}
 	return fetchAntigravityCLILatestManifestVersion(ctx, client)
 }
 

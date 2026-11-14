@@ -28,11 +28,10 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -155,7 +154,7 @@ func main() {
 	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	models := fetchModels(fetchCtx, chosen)
+	models := fetchModels(fetchCtx, chosen, cfg)
 	if len(models) == 0 {
 		fmt.Fprintln(os.Stderr, "warning: no models returned (API may be unavailable or token expired)")
 	} else {
@@ -187,7 +186,7 @@ func main() {
 	fmt.Printf("Model list saved to: %s\n", outputPath)
 }
 
-func fetchModels(ctx context.Context, auth *coreauth.Auth) []modelEntry {
+func fetchModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) []modelEntry {
 	accessToken := metaStringValue(auth.Metadata, "access_token")
 	if accessToken == "" {
 		fmt.Fprintln(os.Stderr, "error: no access token found in auth")
@@ -213,15 +212,11 @@ func fetchModels(ctx context.Context, auth *coreauth.Auth) []modelEntry {
 		if errReq != nil {
 			continue
 		}
-		httpReq.Close = true
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Authorization", "Bearer "+accessToken)
-		httpReq.Header.Set("User-Agent", misc.AntigravityUserAgent())
+		httpReq.Header.Set("User-Agent", runtimeexecutor.AntigravityUserAgent(auth))
 
-		httpClient := &http.Client{Timeout: 30 * time.Second}
-		if transport, _, errProxy := proxyutil.BuildHTTPTransport(auth.ProxyURL); errProxy == nil && transport != nil {
-			httpClient.Transport = transport
-		}
+		httpClient := runtimeexecutor.NewAntigravityHTTPClient(ctx, cfg, auth, 30*time.Second)
 		httpResp, errDo := httpClient.Do(httpReq)
 		if errDo != nil {
 			continue

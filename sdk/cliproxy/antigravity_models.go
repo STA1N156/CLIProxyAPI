@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -36,20 +36,20 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 		return antigravityModelCapabilityHints{}
 	}
 
-	client := &http.Client{}
-	if transport, _, errProxy := proxyutil.BuildHTTPTransport(s.antigravityModelFetchProxyURL(auth)); errProxy == nil && transport != nil {
-		client.Transport = transport
+	var cfg *config.Config
+	if s != nil {
+		cfg = s.cfg
 	}
+	client := runtimeexecutor.NewAntigravityHTTPClient(ctx, cfg, auth, 0)
 
 	for _, baseURL := range antigravityModelBaseURLs(auth) {
 		req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+antigravityModelsPath, strings.NewReader(`{}`))
 		if errReq != nil {
 			continue
 		}
-		req.Close = true
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+accessToken)
-		req.Header.Set("User-Agent", misc.AntigravityUserAgent())
+		req.Header.Set("User-Agent", runtimeexecutor.AntigravityUserAgent(auth))
 
 		resp, errDo := client.Do(req)
 		if errDo != nil {
@@ -71,18 +71,6 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 		}
 	}
 	return antigravityModelCapabilityHints{}
-}
-
-func (s *Service) antigravityModelFetchProxyURL(auth *coreauth.Auth) string {
-	if auth != nil {
-		if proxyURL := strings.TrimSpace(auth.ProxyURL); proxyURL != "" {
-			return proxyURL
-		}
-	}
-	if s != nil && s.cfg != nil {
-		return strings.TrimSpace(s.cfg.ProxyURL)
-	}
-	return ""
 }
 
 func antigravityModelBaseURLs(auth *coreauth.Auth) []string {

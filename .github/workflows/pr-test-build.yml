@@ -21,5 +21,6 @@ jobs:
         run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Build
         run: |
-          go build -o test-output ./cmd/server
+          TLS_OVERLAY="$(go run ./cmd/antigravity_tls_overlay)"
+          go build -overlay="$TLS_OVERLAY" -o test-output ./cmd/server
           rm -f test-output

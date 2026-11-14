@@ -124,6 +124,9 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
+	if stream {
+		httpReq.ContentLength = -1
+	}
 	if host := resolveHost(base); host != "" {
 		httpReq.Host = host
 	}
@@ -337,6 +340,10 @@ func resolveUserAgent(auth *cliproxyauth.Auth) string {
 	return misc.AntigravityRequestUserAgent(antigravityConfiguredUserAgent(auth))
 }
 
+func AntigravityUserAgent(auth *cliproxyauth.Auth) string {
+	return resolveUserAgent(auth)
+}
+
 func resolveLoadCodeAssistUserAgent(auth *cliproxyauth.Auth) string {
 	return misc.AntigravityLoadCodeAssistUserAgent(antigravityConfiguredUserAgent(auth))
 }
@@ -428,7 +435,7 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
 }
 
 func generateRequestID() string {
-	return "agent-" + uuid.NewString()
+	return fmt.Sprintf("agent/%s/%d/%s/1", uuid.NewString(), time.Now().UnixMilli(), uuid.NewString())
 }
 
 func generateImageGenRequestID() string {
