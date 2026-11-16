@@ -9,8 +9,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	log "github.com/sirupsen/logrus"
 )
 
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
@@ -20,6 +22,9 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 
 func (s *Service) registerAntigravityStaticModelsForAuths(auths []*coreauth.Auth) int {
 	if s == nil || len(auths) == 0 {
+		return 0
+	}
+	if s.cfg != nil && (s.cfg.Antigravity.ACP.Enabled == nil || *s.cfg.Antigravity.ACP.Enabled) {
 		return 0
 	}
 	registeredIDs := make([]string, 0)
@@ -144,8 +149,19 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = registry.GetAIStudioModels()
 		models = applyExcludedModels(models, excluded)
 	case "antigravity":
-		models = registry.GetAntigravityModels()
-		models = applyAntigravityFetchedModelCapabilities(models, s.fetchAntigravityModelCapabilityHintsForAuth(ctx, a))
+		if s.cfg != nil && (s.cfg.Antigravity.ACP.Enabled == nil || *s.cfg.Antigravity.ACP.Enabled) {
+			offered, err := runtimeexecutor.AntigravityACPModels(ctx, s.cfg, a)
+			if err != nil {
+				log.Warnf("antigravity ACP model discovery: %v", err)
+				break
+			}
+			for _, model := range offered {
+				models = append(models, &ModelInfo{ID: model.ID, Object: "model", OwnedBy: "google", Type: "antigravity", DisplayName: model.Name, UserDefined: true})
+			}
+		} else {
+			models = registry.GetAntigravityModels()
+			models = applyAntigravityFetchedModelCapabilities(models, s.fetchAntigravityModelCapabilityHintsForAuth(ctx, a))
+		}
 		models = applyExcludedModels(models, excluded)
 	case "claude":
 		models = registry.GetClaudeModels()

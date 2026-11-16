@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -21,6 +22,16 @@ import (
 
 // CountTokens counts tokens for the given request using the Antigravity API.
 func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	if e.acpEnabled() {
+		payload := sdktranslator.TranslateRequest(opts.SourceFormat, sdktranslator.FromString("claude"), req.Model, req.Payload, false)
+		count, err := helps.CountClaudeInputTokens(payload)
+		if err != nil {
+			return cliproxyexecutor.Response{}, err
+		}
+		raw := []byte(fmt.Sprintf(`{"totalTokens":%d}`, count))
+		result := sdktranslator.TranslateTokenCount(ctx, sdktranslator.FromString("antigravity"), cliproxyexecutor.ResponseFormatOrSource(opts), count, raw)
+		return cliproxyexecutor.Response{Payload: result}, nil
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	from := opts.SourceFormat
