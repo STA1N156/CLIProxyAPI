@@ -17,7 +17,7 @@ func TestAntigravityModelHintsRequestIncludesCredentialProject(t *testing.T) {
 			t.Errorf("model request project = %v, error = %v", body, err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"webSearchModelIds":["search-model"],"models":{"search-model":{"model":"MODEL_SEARCH"}}}`))
+		_, _ = w.Write([]byte(`{"webSearchModelIds":["search-model"],"models":{"search-model":{"model":"MODEL_SEARCH","maxOutputTokens":32768}}}`))
 	}))
 	defer server.Close()
 	auth := &coreauth.Auth{ID: "model-project-test", Attributes: map[string]string{"base_url": server.URL}, Metadata: map[string]any{"access_token": "fake", "project_id": "account-project"}}
@@ -27,5 +27,8 @@ func TestAntigravityModelHintsRequestIncludesCredentialProject(t *testing.T) {
 	}
 	if hints.ModelEnums["search-model"] != "MODEL_SEARCH" {
 		t.Fatal("official model enum was not returned")
+	}
+	if hints.OutputLimits["search-model"] != 32768 {
+		t.Fatal("official output limit was not returned")
 	}
 }

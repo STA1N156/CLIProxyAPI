@@ -1,7 +1,9 @@
 package helps
 
 import (
+	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -15,24 +17,78 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-var antigravityModelEnums = cache.NewBoundedLRU[string, *atomic.Pointer[map[string]string]](8192, nil)
+type antigravityModelCatalog struct {
+	enums  map[string]string
+	limits map[string]int
+}
+
+//go:embed antigravity_model_limits.json
+var antigravityModelLimitsJSON []byte
+
+var antigravityDefaultModelLimits = func() map[string]int {
+	var limits map[string]int
+	_ = json.Unmarshal(antigravityModelLimitsJSON, &limits)
+	return limits
+}()
+
+var antigravityModelEnums = cache.NewBoundedLRU[string, *atomic.Pointer[antigravityModelCatalog]](8192, nil)
 var antigravitySessionUsage = cache.NewBoundedLRU[string, *atomic.Uint32](16384, nil)
+var antigravityExecutions = cache.NewBoundedLRU[string, string](32768, nil)
+
+type antigravityExecutionKey struct{}
+
+// WithAntigravityExecution records the turn identity without retaining its payload.
+func WithAntigravityExecution(ctx context.Context, payload []byte) context.Context {
+	if key := gjson.GetBytes(payload, "request.labels.request_id").String(); key != "" {
+		return context.WithValue(ctx, antigravityExecutionKey{}, key)
+	}
+	return ctx
+}
+
+// CompleteAntigravityExecution records only a terminal, successful model response.
+func CompleteAntigravityExecution(ctx context.Context, payload []byte) {
+	key, _ := ctx.Value(antigravityExecutionKey{}).(string)
+	if key == "" || ctx.Err() != nil {
+		return
+	}
+	response := gjson.GetBytes(payload, "response")
+	if !response.Exists() {
+		response = gjson.ParseBytes(payload)
+	}
+	if response.Get("error").Exists() || response.Get("candidates.0.finishReason").String() == "" {
+		return
+	}
+	antigravityExecutions.GetOrAdd(key, uuid.NewString)
+}
 
 // CacheAntigravityModelEnums stores an immutable catalog from credential discovery.
-func CacheAntigravityModelEnums(scope string, models map[string]string) {
-	entry := antigravityModelEnums.GetOrAdd(scope, func() *atomic.Pointer[map[string]string] {
-		return &atomic.Pointer[map[string]string]{}
+func CacheAntigravityModelEnums(scope string, models map[string]string, limits map[string]int) {
+	entry := antigravityModelEnums.GetOrAdd(scope, func() *atomic.Pointer[antigravityModelCatalog] {
+		return &atomic.Pointer[antigravityModelCatalog]{}
 	})
-	entry.Store(&models)
+	entry.Store(&antigravityModelCatalog{enums: models, limits: limits})
 }
 
 func ApplyAntigravityModelEnum(payload []byte, scope, model string) []byte {
 	if entry, ok := antigravityModelEnums.Get(scope); ok {
 		if models := entry.Load(); models != nil {
-			if value := (*models)[model]; value != "" {
+			if value := models.enums[model]; value != "" {
 				payload, _ = sjson.SetBytes(payload, "request.labels.model_enum", value)
 			}
 		}
+	}
+	return payload
+}
+
+func ApplyAntigravityOutputLimit(payload []byte, scope, model string) []byte {
+	limit := antigravityDefaultModelLimits[model]
+	if entry, ok := antigravityModelEnums.Get(scope); ok {
+		if catalog := entry.Load(); catalog != nil && catalog.limits[model] > 0 {
+			limit = catalog.limits[model]
+		}
+	}
+	if limit > 0 {
+		payload, _ = sjson.SetBytes(payload, "request.generationConfig.maxOutputTokens", limit)
 	}
 	return payload
 }
@@ -87,6 +143,11 @@ func BindAntigravityRequestIdentity(payload []byte, sessionID string) []byte {
 	labels["last_step_index"] = strconv.Itoa(step)
 	if strings.TrimSpace(labels["request_id"]) == "" {
 		labels["request_id"] = trajectory + "-" + strconv.Itoa(requests)
+	}
+	if requests > 0 && strings.TrimSpace(labels["last_execution_id"]) == "" {
+		if previous, ok := antigravityExecutions.Get(trajectory + "-" + strconv.Itoa(requests-1)); ok {
+			labels["last_execution_id"] = previous
+		}
 	}
 	var used uint32
 	model := strings.ToLower(gjson.GetBytes(payload, "model").String())

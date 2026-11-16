@@ -404,8 +404,8 @@ func assertNonSchemaRequestPreserved(t *testing.T, body map[string]any) {
 	}
 
 	if generationConfig, ok := request["generationConfig"].(map[string]any); ok {
-		if _, ok := generationConfig["maxOutputTokens"]; ok {
-			t.Fatalf("maxOutputTokens should still be removed for non-Claude requests")
+		if generationConfig["maxOutputTokens"] != float64(65536) {
+			t.Fatalf("maxOutputTokens should use the official image model limit")
 		}
 	}
 }

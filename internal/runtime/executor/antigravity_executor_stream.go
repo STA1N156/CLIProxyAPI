@@ -269,6 +269,7 @@ attemptLoop:
 					if payload == nil {
 						continue
 					}
+					helps.CompleteAntigravityExecution(httpReq.Context(), payload)
 
 					if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
 						reporter.Publish(ctx, detail)

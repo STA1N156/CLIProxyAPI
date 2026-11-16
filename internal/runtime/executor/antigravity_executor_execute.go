@@ -230,6 +230,7 @@ attemptLoop:
 			}
 
 			// Success
+			helps.CompleteAntigravityExecution(httpReq.Context(), bodyBytes)
 			if useCredits {
 				clearAntigravityCreditsFailureState(auth)
 			}
@@ -503,6 +504,7 @@ attemptLoop:
 					if payload == nil {
 						continue
 					}
+					helps.CompleteAntigravityExecution(httpReq.Context(), payload)
 
 					if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
 						reporter.Publish(ctx, detail)
