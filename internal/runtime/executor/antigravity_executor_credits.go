@@ -215,7 +215,7 @@ func classifyAntigravity429(body []byte) antigravity429Category {
 
 func decideAntigravity429(body []byte) antigravity429Decision {
 	decision := antigravity429Decision{kind: antigravity429DecisionSoftRetry}
-	if len(body) == 0 {
+	if len(body) == 0 || cliproxyauth.IsAntigravityQuota429(body) {
 		return decision
 	}
 

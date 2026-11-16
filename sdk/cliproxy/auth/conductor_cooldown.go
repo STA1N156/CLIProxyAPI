@@ -748,7 +748,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			} else {
 				clearAuthStateOnSuccess(auth, now)
 			}
-		} else {
+		} else if !(strings.EqualFold(auth.Provider, "antigravity") && result.Error != nil &&
+			statusCodeFromResult(result.Error) == http.StatusTooManyRequests && IsAntigravityQuota429([]byte(result.Error.Message))) {
 			if modelKey != "" {
 				if !shouldSkipCredentialCooldown(result.Error) {
 					disableCooling := m.cooldownDisabledForAuth(auth)

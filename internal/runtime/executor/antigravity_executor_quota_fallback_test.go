@@ -117,6 +117,17 @@ func TestAntigravityQuotaFallbackAcrossCredentials(t *testing.T) {
 				} else if _, errExecute := manager.Execute(ctx, []string{"antigravity"}, req, opts); errExecute != nil {
 					t.Fatal(errExecute)
 				}
+				if i == 0 && tc.move {
+					for j := 0; j < 3; j++ {
+						auth, _ := manager.GetByID(fmt.Sprintf("%s-%d", t.Name(), j))
+						if auth.Unavailable || auth.Quota.Exceeded || !auth.NextRetryAfter.IsZero() {
+							t.Fatal("exact quota response cooled the credential")
+						}
+						if state := auth.ModelStates[tc.model]; state != nil && (state.Unavailable || state.Quota.Exceeded || !state.NextRetryAfter.IsZero()) {
+							t.Fatal("exact quota response cooled the model")
+						}
+					}
+				}
 			}
 			mu.Lock()
 			defer mu.Unlock()

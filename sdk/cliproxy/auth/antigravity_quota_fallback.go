@@ -16,7 +16,7 @@ func withAntigravityQuotaFallback(ctx context.Context) context.Context {
 
 // ObserveAntigravityQuota429 handles only the exact generic quota message from a 429 response.
 func ObserveAntigravityQuota429(ctx context.Context, body []byte) {
-	if gjson.GetBytes(body, "error.message").String() != "Resource has been exhausted (e.g. check quota)." {
+	if !IsAntigravityQuota429(body) {
 		return
 	}
 	if ctx != nil {
@@ -24,6 +24,12 @@ func ObserveAntigravityQuota429(ctx context.Context, body []byte) {
 			flag.Store(true)
 		}
 	}
+}
+
+// IsAntigravityQuota429 matches the exact response that needs prompt relocation.
+// Callers must check the HTTP status separately.
+func IsAntigravityQuota429(body []byte) bool {
+	return gjson.GetBytes(body, "error.message").String() == "Resource has been exhausted (e.g. check quota)."
 }
 
 // AntigravityQuotaFallbackEnabled reports whether this request needs prompt relocation on retry.
