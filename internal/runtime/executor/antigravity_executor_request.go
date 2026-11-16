@@ -57,7 +57,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		return nil, errProject
 	}
 	payload = geminiToAntigravity(modelName, payload, projectID, derivedSessionIDs...)
-	if gjson.GetBytes(payload, "requestType").String() == "agent" {
+	if reqType := gjson.GetBytes(payload, "requestType").String(); reqType == "" || reqType == "agent" {
 		payload = helps.ApplyAntigravityModelEnum(payload, antigravityTransportScope(auth), modelName)
 	}
 	if cliproxyauth.AntigravityQuotaFallbackEnabled(ctx) {
@@ -394,11 +394,10 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
 
 	isImageModel := strings.Contains(modelName, "image")
 	reqType := strings.TrimSpace(gjson.GetBytes(template, "requestType").String())
-	if reqType == "" {
-		reqType = "agent"
-		if isImageModel {
-			reqType = "image_gen"
-		}
+	if reqType == "agent" {
+		template, _ = sjson.DeleteBytes(template, "requestType")
+	} else if reqType == "" && isImageModel {
+		reqType = "image_gen"
 		template, _ = sjson.SetBytes(template, "requestType", reqType)
 	}
 

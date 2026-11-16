@@ -16,8 +16,8 @@ import (
 
 func TestAntigravityBuildRequest_SanitizesGeminiToolSchema(t *testing.T) {
 	body := buildRequestBodyFromPayload(t, "gemini-2.5-pro")
-	if body["requestType"] != "agent" {
-		t.Fatal("ordinary requests should use the official agent requestType")
+	if _, ok := body["requestType"]; ok {
+		t.Fatal("ordinary requests should omit requestType")
 	}
 
 	decl := extractFirstFunctionDeclaration(t, body)
@@ -32,10 +32,10 @@ func TestAntigravityBuildRequest_SanitizesGeminiToolSchema(t *testing.T) {
 	assertSchemaSanitizedAndPropertyPreserved(t, params)
 }
 
-func TestAntigravityBuildRequest_PreservesAgentRequestType(t *testing.T) {
+func TestAntigravityBuildRequest_RemovesAgentRequestType(t *testing.T) {
 	body := buildRequestBodyFromRawPayload(t, "gemini-2.5-pro", []byte(`{"requestType":"agent","request":{}}`))
-	if body["requestType"] != "agent" {
-		t.Fatal("agent requestType should be preserved")
+	if _, ok := body["requestType"]; ok {
+		t.Fatal("agent requestType should be removed")
 	}
 }
 
