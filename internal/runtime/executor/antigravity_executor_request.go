@@ -72,6 +72,9 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		payload, _ = sjson.SetBytes(payload, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
 	}
 	payload = applyAntigravityNativeSignatureReplayIfNeeded(modelName, payload)
+	if gjson.GetBytes(payload, "requestType").String() == "agent" {
+		payload = helps.WrapAntigravityUserMessages(payload)
+	}
 	payload = helps.OrderAntigravityJSON(payload)
 	var payloadLog []byte
 	if e.cfg != nil && e.cfg.RequestLog {
@@ -366,10 +369,11 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
 
 	isImageModel := strings.Contains(modelName, "image")
 	reqType := strings.TrimSpace(gjson.GetBytes(template, "requestType").String())
-	if reqType == "agent" {
-		template, _ = sjson.DeleteBytes(template, "requestType")
-	} else if reqType == "" && isImageModel {
-		reqType = "image_gen"
+	if reqType == "" {
+		reqType = "agent"
+		if isImageModel {
+			reqType = "image_gen"
+		}
 		template, _ = sjson.SetBytes(template, "requestType", reqType)
 	}
 
