@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -72,6 +71,7 @@ type Turn struct {
 	cancel  context.CancelFunc
 	life    context.Context
 	err     error
+	banner  string
 }
 
 func (t *Turn) Events() <-chan Event { return t.events }
@@ -117,6 +117,7 @@ type Session struct {
 	listed     chan struct{}
 	listedOnce sync.Once
 	closed     atomic.Bool
+	closeDone  chan struct{}
 	ID         string
 	Models     []Model
 	mu         sync.Mutex
@@ -126,10 +127,17 @@ type Session struct {
 }
 
 func (s *Session) Closed() bool { return s.closed.Load() }
-func (s *Session) Turn() *Turn  { s.mu.Lock(); defer s.mu.Unlock(); return s.turn }
+func (s *Session) WaitClosed(ctx context.Context) error {
+	select {
+	case <-s.closeDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (s *Session) Turn() *Turn { s.mu.Lock(); defer s.mu.Unlock(); return s.turn }
 
 type Process struct {
-	closing                map[chan struct{}]struct{}
 	ctx                    context.Context
 	cancel                 context.CancelFunc
 	cmd                    *exec.Cmd
@@ -206,7 +214,7 @@ func Start(ctx context.Context, opts Options) (*Process, error) {
 	}
 
 	life, cancel := context.WithCancel(context.Background())
-	p := &Process{ctx: life, cancel: cancel, pending: make(map[string]chan rpcMessage), sessions: make(map[string]*Session), slots: make(chan struct{}, opts.MaxSessions), dir: dir, closing: make(map[chan struct{}]struct{})}
+	p := &Process{ctx: life, cancel: cancel, pending: make(map[string]chan rpcMessage), sessions: make(map[string]*Session), slots: make(chan struct{}, opts.MaxSessions), dir: dir}
 	if err = p.startMCP(); err != nil {
 		cancel()
 		return nil, err
@@ -471,40 +479,26 @@ func (p *Process) read(reader io.Reader) {
 		default:
 			continue
 		}
-		select {
-		case t.events <- e:
-		case <-t.life.Done():
-		default:
-			// A slow reader must not stop notifications for every other session.
-			go p.Cancel(s)
+		for _, event := range t.output(e, false) {
+			select {
+			case t.events <- event:
+			case <-t.life.Done():
+			default:
+				go p.Cancel(s)
+			}
 		}
 	}
 }
 func (p *Process) NewSession(ctx context.Context, tools []Tool, resumeID string) (*Session, error) {
 	select {
 	case p.slots <- struct{}{}:
-	default:
-		return nil, errors.New("ACP account session capacity reached")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-p.ctx.Done():
+		return nil, errors.New("official agy CLI exited")
 	}
 
-	s := &Session{tools: tools}
-	p.mu.Lock()
-	closures := make([]chan struct{}, 0, len(p.closing))
-	for done := range p.closing {
-		closures = append(closures, done)
-	}
-	p.mu.Unlock()
-	for _, done := range closures {
-		select {
-		case <-done:
-		case <-ctx.Done():
-			<-p.slots
-			return nil, ctx.Err()
-		case <-p.ctx.Done():
-			<-p.slots
-			return nil, errors.New("official CLI exited")
-		}
-	}
+	s := &Session{tools: tools, closeDone: make(chan struct{})}
 
 	params := map[string]any{"cwd": filepath.Join(p.dir, "workspace"), "mcpServers": []any{}}
 
@@ -560,20 +554,14 @@ func (p *Process) CloseSession(s *Session) {
 		s.turn.cancel()
 	}
 	s.mu.Unlock()
-	done := make(chan struct{})
 	p.mu.Lock()
 	delete(p.sessions, s.ID)
-	p.closing[done] = struct{}{}
 	p.mu.Unlock()
 	go func() {
+		defer close(s.closeDone)
+		defer func() { <-p.slots }()
 		_ = p.Call(p.ctx, "session/close", map[string]any{"sessionId": s.ID}, nil)
-		p.mu.Lock()
-		delete(p.closing, done)
-		close(done)
-		p.mu.Unlock()
 	}()
-	<-p.slots
-
 }
 func (p *Process) Prompt(ctx context.Context, s *Session, model string, parts []any) (*Turn, error) {
 	if s.Closed() {
@@ -630,6 +618,12 @@ func (p *Process) Prompt(ctx context.Context, s *Session, model string, parts []
 				case t.events <- Event{Usage: completed.Usage}:
 				case <-life.Done():
 				}
+			}
+		}
+		for _, event := range t.output(Event{}, true) {
+			select {
+			case t.events <- event:
+			case <-life.Done():
 			}
 		}
 		t.err = err

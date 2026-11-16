@@ -46,10 +46,12 @@ func acpEventError(event agyacp.Event) error {
 	}
 	code := http.StatusBadGateway
 	switch {
-	case strings.Contains(text, "Terms of Service"), strings.Contains(text, "code 403"):
+	case strings.Contains(text, "Terms of Service"), strings.Contains(text, "code 403"), strings.Contains(text, "PERMISSION_DENIED"):
 		code = 403
 	case strings.Contains(text, "Resource has been exhausted"), strings.Contains(text, "code 429"):
 		code = 429
+	case strings.Contains(text, "code 401"), strings.Contains(text, "UNAUTHENTICATED"):
+		code = 401
 	case strings.Contains(text, "credits balance"):
 		code = 402
 	}

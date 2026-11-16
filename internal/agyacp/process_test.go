@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -88,5 +89,50 @@ func TestMCPRoutesSimultaneousSessions(t *testing.T) {
 	p.handleMCP(response, request)
 	if !strings.Contains(response.Body.String(), "unknown session") {
 		t.Fatal("unknown session accepted")
+	}
+}
+
+func TestSplitCLIQuotaBannerIsHeld(t *testing.T) {
+	turn := &Turn{}
+	if got := turn.output(Event{Text: "\n⚠ API error (attempt "}, false); len(got) > 0 {
+		t.Fatal("partial error emitted as text")
+	}
+	got := turn.output(Event{Text: "1): RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota)."}, false)
+	if len(got) != 1 || !strings.HasPrefix(got[0].Text, "⚠ API error") || !strings.Contains(got[0].Text, "code 429") {
+		t.Fatalf("error lost: %+v", got)
+	}
+}
+
+func TestPendingCloseDoesNotBlockOtherSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	p := &Process{ctx: ctx, cancel: cancel, stdin: writer, pending: make(map[string]chan rpcMessage), sessions: make(map[string]*Session), slots: make(chan struct{}, 2)}
+	old := &Session{ID: "old", closeDone: make(chan struct{})}
+	p.sessions[old.ID] = old
+	p.slots <- struct{}{}
+	go func() {
+		decoder := json.NewDecoder(reader)
+		for {
+			var message rpcMessage
+			if decoder.Decode(&message) != nil {
+				return
+			}
+			if message.Method == "session/new" {
+				p.mu.Lock()
+				ch := p.pending[string(message.ID)]
+				p.mu.Unlock()
+				ch <- rpcMessage{Result: json.RawMessage(`{"sessionId":"new","models":{"availableModels":[]}}`)}
+			}
+		}
+	}()
+	p.CloseSession(old)
+	request, cancelRequest := context.WithTimeout(ctx, time.Second)
+	defer cancelRequest()
+	session, err := p.NewSession(request, nil, "")
+	if err != nil || session.ID != "new" {
+		t.Fatalf("unrelated session was blocked by close: %v", err)
 	}
 }

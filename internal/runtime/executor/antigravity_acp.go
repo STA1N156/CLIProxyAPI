@@ -569,6 +569,9 @@ func (e *AntigravityExecutor) prepareACP(ctx context.Context, auth *cliproxyauth
 			start = len(c.history)
 		} else if len(c.history) > 0 {
 			p.CloseSession(c.session)
+			if errClose := c.session.WaitClosed(ctx); errClose != nil {
+				return nil, nil, nil, nil, errClose
+			}
 			session, errSession := p.NewSession(ctx, tools, "")
 			if errSession != nil {
 				return nil, nil, nil, nil, statusErr{code: 503, msg: errSession.Error()}
@@ -621,10 +624,7 @@ func AntigravityACPModels(ctx context.Context, cfg *config.Config, auth *cliprox
 	}
 	cache.models = append([]agyacp.Model(nil), c.session.Models...)
 	cache.refreshed = time.Now()
-	acpPool.Lock()
-	acpParkLocked(c)
-	acpPool.Unlock()
-	c.release()
+	c.releaseCatalog()
 	return append([]agyacp.Model(nil), cache.models...), nil
 }
 
@@ -633,7 +633,7 @@ func (e *AntigravityExecutor) refreshACP(ctx context.Context, auth *cliproxyauth
 	if err != nil {
 		return nil, err
 	}
-	defer c.release()
+	defer c.releaseCatalog()
 	token, err := c.process.Credential()
 	if err != nil {
 		return nil, err
@@ -648,4 +648,18 @@ func (e *AntigravityExecutor) refreshACP(ctx context.Context, auth *cliproxyauth
 	}
 	updated.Metadata["expired"] = token.Expiry.Format(time.RFC3339)
 	return updated, nil
+}
+
+// Catalog and refresh work must not leave a process running for every stored account.
+func (c *acpConversation) releaseCatalog() {
+	acpPool.Lock()
+	worker := c.worker
+	acpParkLocked(c)
+	if worker != nil && worker.sessions == 0 {
+		acpStopWorkerLocked(worker)
+	}
+	c.busy = false
+	c.lastUsed = time.Now()
+	acpNotifyLocked()
+	acpPool.Unlock()
 }
