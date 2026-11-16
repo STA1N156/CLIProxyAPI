@@ -19,9 +19,6 @@ import (
 
 // Refresh refreshes the authentication credentials using the refresh token.
 func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
-	if e.acpEnabled() {
-		return e.refreshACP(ctx, auth)
-	}
 	if refreshed, handled, err := helps.RefreshAuthViaHome(ctx, e.cfg, auth); handled {
 		return refreshed, err
 	}
@@ -36,9 +33,6 @@ func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Au
 }
 
 func (e *AntigravityExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
-	if e.acpEnabled() {
-		return false
-	}
 	if antigravityProjectIDFromAuth(auth) == "" {
 		return true
 	}

@@ -284,13 +284,6 @@ codex:
 
 # Antigravity provider behavior.
 # antigravity:
-#   acp:
-#     enabled: true             # Use the official Antigravity CLI (default).
-#     path: "agy"               # Official CLI executable; AGY_PATH also supported.
-#     state-dir: ""             # Default: <auth-dir>/.acp; persist this directory.
-#     max-processes: 128        # Global active CLI process cap; tune to RAM and CPU.
-#     max-sessions: 32         # Resident sessions per process (maximum 32).
-#     max-queue: 4096           # Waiting requests; excess requests receive HTTP 503.
 #   sensitive-words:             # optional: words to obfuscate with zero-width characters in system instructions
 #     - "API"
 #     - "proxy"

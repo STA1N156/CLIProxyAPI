@@ -139,8 +139,6 @@ type XAIConfig struct {
 
 // AntigravityConfig configures provider-wide Antigravity request behavior.
 type AntigravityConfig struct {
-	// ACP delegates generation to the official CLI. Enabled by default.
-	ACP AntigravityACPConfig `yaml:"acp,omitempty" json:"acp,omitempty"`
 	// SensitiveWords is a list of words to obfuscate with zero-width characters in system instructions.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
 }
@@ -749,14 +747,3 @@ func (m OpenAICompatibilityModel) GetForceMapping() bool    { return m.ForceMapp
 func (m OpenAICompatibilityModel) GetIsCompat() bool        { return m.IsCompat }
 
 func (m OpenAICompatibilityModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
-
-// AntigravityACPConfig configures the official CLI process pool.
-type AntigravityACPConfig struct {
-	Enabled      *bool  `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	Path         string `yaml:"path,omitempty" json:"path,omitempty"`
-	StateDir     string `yaml:"state-dir,omitempty" json:"state-dir,omitempty"`
-	MaxSessions  int    `yaml:"max-sessions,omitempty" json:"max-sessions,omitempty"`
-	MaxProcesses int    `yaml:"max-processes,omitempty" json:"max-processes,omitempty"`
-	MaxQueue     int    `yaml:"max-queue,omitempty" json:"max-queue,omitempty"`
-	Endpoint     string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
-}

@@ -57,6 +57,9 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		return nil, errProject
 	}
 	payload = geminiToAntigravity(modelName, payload, projectID, derivedSessionIDs...)
+	if gjson.GetBytes(payload, "requestType").String() == "agent" {
+		payload = helps.ApplyAntigravityModelEnum(payload, antigravityTransportScope(auth), modelName)
+	}
 	if cliproxyauth.AntigravityQuotaFallbackEnabled(ctx) {
 		payload = helps.MoveAntigravitySystemInstructionToUser(payload)
 	}
@@ -103,19 +106,6 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 			payloadLog = append([]byte(nil), payload...)
 		}
 	}
-
-	// if useAntigravitySchema {
-	// 	systemInstructionPartsResult := gjson.Get(payloadStr, "request.systemInstruction.parts")
-	// 	payloadStr, _ = sjson.SetBytes([]byte(payloadStr), "request.systemInstruction.role", "user")
-	// 	payloadStr, _ = sjson.SetBytes([]byte(payloadStr), "request.systemInstruction.parts.0.text", systemInstruction)
-	// 	payloadStr, _ = sjson.SetBytes([]byte(payloadStr), "request.systemInstruction.parts.1.text", fmt.Sprintf("Please ignore following [ignore]%s[/ignore]", systemInstruction))
-
-	// 	if systemInstructionPartsResult.Exists() && systemInstructionPartsResult.IsArray() {
-	// 		for _, partResult := range systemInstructionPartsResult.Array() {
-	// 			payloadStr, _ = sjson.SetRawBytes([]byte(payloadStr), "request.systemInstruction.parts.-1", []byte(partResult.Raw))
-	// 		}
-	// 	}
-	// }
 
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bodyReader)
 	if errReq != nil {
@@ -344,6 +334,11 @@ func AntigravityUserAgent(auth *cliproxyauth.Auth) string {
 	return resolveUserAgent(auth)
 }
 
+// CacheAntigravityModelEnums reuses credential discovery for request trace labels.
+func CacheAntigravityModelEnums(auth *cliproxyauth.Auth, models map[string]string) {
+	helps.CacheAntigravityModelEnums(antigravityTransportScope(auth), models)
+}
+
 func resolveLoadCodeAssistUserAgent(auth *cliproxyauth.Auth) string {
 	return misc.AntigravityLoadCodeAssistUserAgent(antigravityConfiguredUserAgent(auth))
 }
@@ -399,10 +394,11 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
 
 	isImageModel := strings.Contains(modelName, "image")
 	reqType := strings.TrimSpace(gjson.GetBytes(template, "requestType").String())
-	if reqType == "agent" {
-		template, _ = sjson.DeleteBytes(template, "requestType")
-	} else if reqType == "" && isImageModel {
-		reqType = "image_gen"
+	if reqType == "" {
+		reqType = "agent"
+		if isImageModel {
+			reqType = "image_gen"
+		}
 		template, _ = sjson.SetBytes(template, "requestType", reqType)
 	}
 
@@ -415,7 +411,6 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
 	if isImageModel {
 		template, _ = sjson.SetBytes(template, "requestId", generateImageGenRequestID())
 	} else if reqType != "web_search" {
-		template, _ = sjson.SetBytes(template, "requestId", generateRequestID())
 		sessionID := strings.TrimSpace(gjson.GetBytes(template, "request.sessionId").String())
 		if sessionID == "" && len(derivedSessionIDs) > 0 {
 			sessionID = strings.TrimSpace(derivedSessionIDs[0])
@@ -424,6 +419,7 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
 			sessionID = generateStableSessionID(payload)
 		}
 		template, _ = sjson.SetBytes(template, "request.sessionId", sessionID)
+		template = helps.BindAntigravityRequestIdentity(template, sessionID)
 	}
 
 	template, _ = sjson.DeleteBytes(template, "request.safetySettings")
@@ -432,10 +428,6 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
 		template, _ = sjson.DeleteBytes(template, "toolConfig")
 	}
 	return template
-}
-
-func generateRequestID() string {
-	return fmt.Sprintf("agent/%s/%d/%s/1", uuid.NewString(), time.Now().UnixMilli(), uuid.NewString())
 }
 
 func generateImageGenRequestID() string {

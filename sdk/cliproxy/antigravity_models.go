@@ -20,10 +20,14 @@ const (
 
 type antigravityFetchAvailableModelsResponse struct {
 	WebSearchModelIDs []string `json:"webSearchModelIds"`
+	Models            map[string]struct {
+		Model string `json:"model"`
+	} `json:"models"`
 }
 
 type antigravityModelCapabilityHints struct {
 	WebSearchModelIDs map[string]struct{}
+	ModelEnums        map[string]string
 }
 
 func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Context, auth *coreauth.Auth) antigravityModelCapabilityHints {
@@ -41,9 +45,11 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 		cfg = s.cfg
 	}
 	client := runtimeexecutor.NewAntigravityHTTPClient(ctx, cfg, auth, 0)
+	projectID, _ := auth.Metadata["project_id"].(string)
+	payload, _ := json.Marshal(map[string]string{"project": strings.TrimSpace(projectID)})
 
 	for _, baseURL := range antigravityModelBaseURLs(auth) {
-		req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+antigravityModelsPath, strings.NewReader(`{}`))
+		req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+antigravityModelsPath, strings.NewReader(string(payload)))
 		if errReq != nil {
 			continue
 		}
@@ -66,9 +72,8 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 			continue
 		}
 		hints := parseAntigravityModelCapabilityHints(body)
-		if len(hints.WebSearchModelIDs) > 0 {
-			return hints
-		}
+		runtimeexecutor.CacheAntigravityModelEnums(auth, hints.ModelEnums)
+		return hints
 	}
 	return antigravityModelCapabilityHints{}
 }
@@ -112,7 +117,13 @@ func parseAntigravityModelCapabilityHints(body []byte) antigravityModelCapabilit
 			webSearchModels[modelID] = struct{}{}
 		}
 	}
-	return antigravityModelCapabilityHints{WebSearchModelIDs: webSearchModels}
+	modelEnums := make(map[string]string, len(parsed.Models))
+	for id, model := range parsed.Models {
+		if model.Model != "" {
+			modelEnums[id] = model.Model
+		}
+	}
+	return antigravityModelCapabilityHints{WebSearchModelIDs: webSearchModels, ModelEnums: modelEnums}
 }
 
 func applyAntigravityFetchedModelCapabilities(models []*ModelInfo, hints antigravityModelCapabilityHints) []*ModelInfo {
