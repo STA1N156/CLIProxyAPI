@@ -74,6 +74,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	payload = applyAntigravityNativeSignatureReplayIfNeeded(modelName, payload)
 	if gjson.GetBytes(payload, "requestType").String() == "agent" {
 		payload = helps.WrapAntigravityUserMessages(payload)
+		payload, _ = sjson.DeleteBytes(payload, "requestType")
 	}
 	payload = helps.OrderAntigravityJSON(payload)
 	var payloadLog []byte

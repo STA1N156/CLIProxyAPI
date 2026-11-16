@@ -16,8 +16,8 @@ import (
 
 func TestAntigravityBuildRequest_SanitizesGeminiToolSchema(t *testing.T) {
 	body := buildRequestBodyFromPayload(t, "gemini-2.5-pro")
-	if body["requestType"] != "agent" {
-		t.Fatal("ordinary requests should use agent requestType")
+	if _, ok := body["requestType"]; ok {
+		t.Fatal("ordinary requests should omit requestType")
 	}
 
 	decl := extractFirstFunctionDeclaration(t, body)
@@ -32,10 +32,16 @@ func TestAntigravityBuildRequest_SanitizesGeminiToolSchema(t *testing.T) {
 	assertSchemaSanitizedAndPropertyPreserved(t, params)
 }
 
-func TestAntigravityBuildRequest_PreservesAgentRequestType(t *testing.T) {
-	body := buildRequestBodyFromRawPayload(t, "gemini-2.5-pro", []byte(`{"requestType":"agent","request":{}}`))
-	if body["requestType"] != "agent" {
-		t.Fatal("agent requestType should be preserved")
+func TestAntigravityBuildRequest_RemovesAgentRequestType(t *testing.T) {
+	body := buildRequestBodyFromRawPayload(t, "gemini-2.5-pro", []byte(`{"requestType":"agent","request":{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}}`))
+	if _, ok := body["requestType"]; ok {
+		t.Fatal("agent requestType should be removed")
+	}
+	request := body["request"].(map[string]any)
+	content := request["contents"].([]any)[0].(map[string]any)
+	text := content["parts"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.HasPrefix(text, "<USER_REQUEST>\nhello\n</USER_REQUEST>\n") || !strings.Contains(text, "The current local time is: ") {
+		t.Fatal("user message wrapper should be retained")
 	}
 }
 
