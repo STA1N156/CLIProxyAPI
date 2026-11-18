@@ -162,6 +162,9 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				if toolCallID != "" {
 					c := m.Get("content")
 					toolResponses[toolCallID] = c.Raw
+					if c.Type == gjson.String {
+						toolResponses[toolCallID] = c.String()
+					}
 				}
 			}
 		}
@@ -301,13 +304,14 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							if response == "" {
 								response = "{}"
 							}
-							if response != "null" {
-								parsed := gjson.Parse(response)
-								if parsed.Type == gjson.JSON {
-									part, _ = sjson.SetRawBytes(part, "functionResponse.response.result", []byte(parsed.Raw))
-								} else {
-									part, _ = sjson.SetBytes(part, "functionResponse.response.result", response)
+							if gjson.Valid(response) {
+								path := "functionResponse.response.result"
+								if gjson.Parse(response).IsObject() {
+									path = "functionResponse.response"
 								}
+								part, _ = sjson.SetRawBytes(part, path, []byte(response))
+							} else {
+								part, _ = sjson.SetBytes(part, "functionResponse.response.result", response)
 							}
 							responseParts = append(responseParts, part)
 						}
@@ -323,7 +327,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		if len(systemParts) > 0 {
 			out, _ = sjson.SetRawBytes(out, "request.systemInstruction", antigravityOpenAIContent("user", systemParts))
 		}
-		out = translatorcommon.SetRawArrayItems(out, "request.contents", contentItems)
+		out = translatorcommon.SetRawArrayItems(out, "request.contents", mergeAntigravityOpenAIContents(contentItems))
 	}
 
 	// tools -> request.tools[].functionDeclarations + request.tools[].googleSearch/codeExecution/urlContext passthrough
@@ -619,4 +623,21 @@ func setAntigravityOpenAIRawIfDifferent(out []byte, path string, value gjson.Res
 		return out
 	}
 	return updated
+}
+
+// Merge adjacent turns as agy2api does after collecting tool results.
+func mergeAntigravityOpenAIContents(contents [][]byte) [][]byte {
+	merged := contents[:0]
+	for _, content := range contents {
+		if len(merged) > 0 && gjson.GetBytes(merged[len(merged)-1], "role").String() == gjson.GetBytes(content, "role").String() {
+			parts := make([][]byte, 0)
+			for _, raw := range [][]byte{merged[len(merged)-1], content} {
+				gjson.GetBytes(raw, "parts").ForEach(func(_, part gjson.Result) bool { parts = append(parts, []byte(part.Raw)); return true })
+			}
+			merged[len(merged)-1], _ = sjson.SetRawBytes(merged[len(merged)-1], "parts", translatorcommon.JoinRawArray(parts))
+		} else {
+			merged = append(merged, content)
+		}
+	}
+	return merged
 }

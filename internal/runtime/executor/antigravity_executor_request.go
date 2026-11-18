@@ -21,7 +21,7 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string, sessionIdentities ...string) (*http.Request, error) {
+func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string, _ ...string) (*http.Request, error) {
 	if token == "" {
 		return nil, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 	}
@@ -53,18 +53,11 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	if errProject != nil {
 		return nil, errProject
 	}
-	payload = helps.NormalizeAntigravityThinking(payload)
-	payload = geminiToAntigravity(modelName, payload, projectID, sessionIdentities...)
-	reqType := util.GetGJSONBytesNoCopy(payload, "requestType").String()
-	if reqType == "chat" || reqType == "agent" {
-		payload = helps.ApplyAntigravityModelEnum(payload, antigravityTransportScope(auth), modelName)
-	}
+	payload, modelName = helps.NormalizeAntigravityHubRequest(payload, modelName)
+	payload = geminiToAntigravity(modelName, payload, projectID)
 	if cliproxyauth.AntigravityQuotaFallbackEnabled(ctx) {
 		payload = helps.MoveAntigravitySystemInstructionToUser(payload)
 	}
-
-	payload = helps.ApplyAntigravityOutputLimit(payload, antigravityTransportScope(auth), modelName)
-
 	mode := util.GetGJSONBytesNoCopy(payload, "request.toolConfig.functionCallingConfig.mode").String()
 	if antigravityRequestNeedsSchemaSanitization(payload) {
 		payload = []byte(sanitizeAntigravityRequestSchemas(string(payload), strings.EqualFold(mode, "VALIDATED")))
@@ -72,16 +65,6 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	payload = helps.SplitAntigravityFunctionTools(payload)
 	if strings.Contains(strings.ToLower(modelName), "claude") {
 		payload = helps.NormalizeAntigravityClaudeTools(payload)
-		const budgetPath = "request.generationConfig.thinkingConfig.thinkingBudget"
-		if strings.EqualFold(mode, "ANY") {
-			payload = helps.DeleteJSONField(payload, "request.generationConfig.thinkingConfig")
-		} else if budget := util.GetGJSONBytesNoCopy(payload, budgetPath); budget.Type == gjson.Number && budget.Num > 0 && budget.Num < 1024 {
-			payload, _ = sjson.SetBytes(payload, budgetPath, 1024)
-		}
-	}
-	payload = applyAntigravityNativeSignatureReplayIfNeeded(modelName, payload)
-	if reqType == "agent" || reqType == "chat" {
-		payload = helps.WrapAntigravityUserMessages(payload)
 	}
 	payload = helps.OrderAntigravityJSON(payload)
 	var payloadLog []byte
@@ -89,7 +72,6 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		payloadLog = append([]byte(nil), payload...)
 	}
 
-	ctx = helps.WithAntigravityExecution(ctx, payload)
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(payload))
 	if errReq != nil {
 		return nil, errReq
@@ -322,37 +304,15 @@ func resolveHost(base string) string {
 }
 
 func resolveUserAgent(auth *cliproxyauth.Auth) string {
-	return misc.AntigravityRequestUserAgent(antigravityConfiguredUserAgent(auth))
+	return misc.AntigravityRequestUserAgent("")
 }
 
 func AntigravityUserAgent(auth *cliproxyauth.Auth) string {
 	return resolveUserAgent(auth)
 }
 
-// CacheAntigravityModelEnums reuses credential discovery for request trace labels.
-func CacheAntigravityModelEnums(auth *cliproxyauth.Auth, models map[string]string, limits map[string]int) {
-	helps.CacheAntigravityModelEnums(antigravityTransportScope(auth), models, limits)
-}
-
 func resolveLoadCodeAssistUserAgent(auth *cliproxyauth.Auth) string {
-	return misc.AntigravityLoadCodeAssistUserAgent(antigravityConfiguredUserAgent(auth))
-}
-
-func antigravityConfiguredUserAgent(auth *cliproxyauth.Auth) string {
-	raw := ""
-	if auth != nil {
-		if auth.Attributes != nil {
-			if ua := strings.TrimSpace(auth.Attributes["user_agent"]); ua != "" {
-				raw = ua
-			}
-		}
-		if raw == "" && auth.Metadata != nil {
-			if ua, ok := auth.Metadata["user_agent"].(string); ok && strings.TrimSpace(ua) != "" {
-				raw = strings.TrimSpace(ua)
-			}
-		}
-	}
-	return raw
+	return misc.AntigravityLoadCodeAssistUserAgent("")
 }
 
 var antigravityBaseURLFallbackOrder = func(auth *cliproxyauth.Auth) []string {
@@ -382,58 +342,33 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 	return ""
 }
 
-func geminiToAntigravity(modelName string, payload []byte, projectID string, sessionIdentities ...string) []byte {
-	template := bytes.Clone(payload)
-	template = helps.SetStringIfDifferent(template, "model", modelName)
-	template = helps.SetStringIfDifferent(template, "userAgent", "antigravity")
-	template = helps.NormalizeAntigravitySystemInstruction(template)
-	if toolConfig := util.GetGJSONBytesNoCopy(template, "toolConfig"); toolConfig.Exists() {
-		if !util.GetGJSONBytesNoCopy(template, "request.toolConfig").Exists() {
-			template, _ = sjson.SetRawBytes(template, "request.toolConfig", []byte(toolConfig.Raw))
-		}
-		template, _ = sjson.DeleteBytes(template, "toolConfig")
+func geminiToAntigravity(modelName string, payload []byte, projectID string, _ ...string) []byte {
+	inner := util.GetGJSONBytesNoCopy(payload, "request")
+	if !inner.IsObject() {
+		inner = gjson.Parse(`{}`)
 	}
-	reqType, hasTools := helps.AntigravityRequestType(template, modelName)
-	template = helps.SetStringIfDifferent(template, "requestType", reqType)
-	if !hasTools {
-		template = helps.DeleteJSONField(template, "request.toolConfig")
-		template = helps.DeleteJSONField(template, "request.tools")
-	}
-
-	if projectID != "" {
-		template = helps.SetStringIfDifferent(template, "project", projectID)
-	} else {
-		template, _ = sjson.DeleteBytes(template, "project")
-	}
-
-	if reqType != "web_search" {
-		sessionID := cliproxysession.NormalizeExplicitID(util.GetGJSONBytesNoCopy(template, "request.sessionId").String())
+	template := []byte(`{"project":"","request":` + inner.Raw + `,"model":"","userAgent":"antigravity"}`)
+	template, _ = sjson.SetBytes(template, "project", projectID)
+	template, _ = sjson.SetBytes(template, "model", modelName)
+	sessionID := strings.TrimSpace(util.GetGJSONBytesNoCopy(template, "request.sessionId").String())
+	identity := cliproxysession.DeriveAntigravityID(sdktranslator.FormatAntigravity, template, "", modelName)
+	if sessionID == "" {
+		sessionID = helps.AntigravitySessionID(identity)
 		if sessionID == "" {
-			sessionID = cliproxysession.NormalizeExplicitID(util.GetGJSONBytesNoCopy(template, "request.session_id").String())
-		}
-		identity := sessionID
-		if sessionID == "" && len(sessionIdentities) > 0 {
-			identity = strings.TrimSpace(sessionIdentities[0])
-		}
-		if sessionID == "" {
-			if identity == "" {
-				identity = cliproxysession.DeriveAntigravityID(sdktranslator.FormatAntigravity, template, "", modelName)
-			}
-			if strings.HasPrefix(identity, "-") {
-				sessionID = identity
-			} else {
-				sessionID = helps.AntigravitySessionID(identity)
-			}
-			if sessionID == "" {
-				sessionID = generateSessionID()
-			}
+			sessionID = generateSessionID()
 		}
 		template, _ = sjson.SetBytes(template, "request.sessionId", sessionID)
-		template = helps.BindAntigravityRequestIdentity(template, sessionID, identity)
 	}
-
-	template = helps.DeleteJSONField(template, "request.session_id")
-	return helps.DeleteJSONField(template, "request.safetySettings")
+	template = helps.BindAntigravityRequestIdentity(template, sessionID, identity)
+	reqType, hasTools := helps.AntigravityRequestType(template, modelName)
+	template, _ = sjson.SetBytes(template, "requestType", reqType)
+	if !hasTools {
+		template = helps.DeleteJSONField(template, "request.toolConfig")
+	}
+	if reqType != "agent" {
+		template = helps.DeleteJSONField(template, "request.tools")
+	}
+	return template
 }
 
 func generateSessionID() string {

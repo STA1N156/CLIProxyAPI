@@ -40,8 +40,8 @@ func TestAntigravityBuildRequest_ClassifiesTextAsChat(t *testing.T) {
 	request := body["request"].(map[string]any)
 	content := request["contents"].([]any)[0].(map[string]any)
 	text := content["parts"].([]any)[0].(map[string]any)["text"].(string)
-	if !strings.HasPrefix(text, "<USER_REQUEST>\nhello\n</USER_REQUEST>\n") || !strings.Contains(text, "The current local time is: ") {
-		t.Fatal("user message wrapper should be retained")
+	if text != "hello" {
+		t.Fatal("user message must be forwarded without a wrapper")
 	}
 }
 
@@ -197,8 +197,8 @@ func TestAntigravityBuildRequestUsesDerivedSessionIDAndPreservesExplicit(t *test
 	if !ok {
 		t.Fatalf("request missing or invalid: %v", body["request"])
 	}
-	if got := request["sessionId"]; got != "-123456789" {
-		t.Fatalf("request.sessionId = %v, want -123456789", got)
+	if got := request["sessionId"]; got == "" || got == "-123456789" {
+		t.Fatalf("request.sessionId should be derived from the body, got %v", got)
 	}
 
 	explicitPayload := []byte(`{"request":{"sessionId":"-987654321","contents":[{"role":"user","parts":[{"text":"hello"}]}]}}`)
@@ -216,7 +216,7 @@ func TestAntigravityBuildRequestUsesDerivedSessionIDAndPreservesExplicit(t *test
 	}
 }
 
-func TestAntigravityBuildRequest_PreservesIndependentWebSearchRequestType(t *testing.T) {
+func TestAntigravityBuildRequest_DropsOrphanSearchTools(t *testing.T) {
 	body := buildRequestBodyFromRawPayload(t, "gemini-3.1-flash-lite", []byte(`{
 		"requestType": "web_search",
 		"request": {
@@ -243,18 +243,18 @@ func TestAntigravityBuildRequest_PreservesIndependentWebSearchRequestType(t *tes
 		}
 	}`))
 
-	if got, ok := body["requestType"].(string); !ok || got != "web_search" {
-		t.Fatalf("requestType should stay web_search, got=%v", body["requestType"])
+	if got, ok := body["requestType"].(string); !ok || got != "chat" {
+		t.Fatalf("requestType should be chat, got=%v", body["requestType"])
 	}
-	if _, ok := body["requestId"]; ok {
-		t.Fatalf("web_search request should not add requestId: %v", body["requestId"])
+	if _, ok := body["requestId"]; !ok {
+		t.Fatalf("request should have requestId: %v", body["requestId"])
 	}
 	request, ok := body["request"].(map[string]any)
 	if !ok {
 		t.Fatalf("request missing or invalid: %v", body["request"])
 	}
-	if _, ok := request["sessionId"]; ok {
-		t.Fatalf("web_search request should not add request.sessionId: %v", request["sessionId"])
+	if _, ok := request["sessionId"]; !ok {
+		t.Fatalf("request should have request.sessionId: %v", request["sessionId"])
 	}
 	if got, ok := body["project"].(string); !ok || got != "project-1" {
 		t.Fatalf("project should come from auth metadata, got=%v", body["project"])
@@ -445,8 +445,8 @@ func assertNonSchemaRequestPreserved(t *testing.T, body map[string]any) {
 	}
 
 	if generationConfig, ok := request["generationConfig"].(map[string]any); ok {
-		if generationConfig["maxOutputTokens"] != float64(65536) {
-			t.Fatalf("maxOutputTokens should use the official image model limit")
+		if generationConfig["candidateCount"] != float64(1) || generationConfig["maxOutputTokens"] != nil {
+			t.Fatalf("image generation config should match agy2api")
 		}
 	}
 }

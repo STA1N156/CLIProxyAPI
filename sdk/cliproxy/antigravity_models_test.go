@@ -25,10 +25,4 @@ func TestAntigravityModelHintsRequestIncludesCredentialProject(t *testing.T) {
 	if _, ok := hints.WebSearchModelIDs["search-model"]; !ok {
 		t.Fatal("model hints were not returned")
 	}
-	if hints.ModelEnums["search-model"] != "MODEL_SEARCH" {
-		t.Fatal("official model enum was not returned")
-	}
-	if hints.OutputLimits["search-model"] != 32768 {
-		t.Fatal("official output limit was not returned")
-	}
 }

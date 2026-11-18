@@ -60,9 +60,6 @@ func AntigravityRequestType(payload []byte, model string) (string, bool) {
 	if strings.Contains(strings.ToLower(model), "image") {
 		return "image_gen", false
 	}
-	if util.GetGJSONBytesNoCopy(payload, "requestType").String() == "web_search" {
-		return "web_search", true
-	}
 	hasTools := false
 	util.GetGJSONBytesNoCopy(payload, "request.tools").ForEach(func(_, tool gjson.Result) bool {
 		if tool.IsObject() {
@@ -70,8 +67,6 @@ func AntigravityRequestType(payload []byte, model string) (string, bool) {
 				switch key.String() {
 				case "functionDeclarations", "function_declarations":
 					hasTools = value.Get("#").Int() > 0
-				default:
-					hasTools = true
 				}
 				return !hasTools
 			})

@@ -21,16 +21,10 @@ const (
 
 type antigravityFetchAvailableModelsResponse struct {
 	WebSearchModelIDs []string `json:"webSearchModelIds"`
-	Models            map[string]struct {
-		Model           string `json:"model"`
-		MaxOutputTokens int    `json:"maxOutputTokens"`
-	} `json:"models"`
 }
 
 type antigravityModelCapabilityHints struct {
 	WebSearchModelIDs map[string]struct{}
-	ModelEnums        map[string]string
-	OutputLimits      map[string]int
 }
 
 func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Context, auth *coreauth.Auth) antigravityModelCapabilityHints {
@@ -76,7 +70,6 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 			continue
 		}
 		hints := parseAntigravityModelCapabilityHints(body)
-		runtimeexecutor.CacheAntigravityModelEnums(auth, hints.ModelEnums, hints.OutputLimits)
 		return hints
 	}
 	return antigravityModelCapabilityHints{}
@@ -121,17 +114,7 @@ func parseAntigravityModelCapabilityHints(body []byte) antigravityModelCapabilit
 			webSearchModels[modelID] = struct{}{}
 		}
 	}
-	modelEnums := make(map[string]string, len(parsed.Models))
-	outputLimits := make(map[string]int, len(parsed.Models))
-	for id, model := range parsed.Models {
-		if model.Model != "" {
-			modelEnums[id] = model.Model
-		}
-		if model.MaxOutputTokens > 0 {
-			outputLimits[id] = model.MaxOutputTokens
-		}
-	}
-	return antigravityModelCapabilityHints{WebSearchModelIDs: webSearchModels, ModelEnums: modelEnums, OutputLimits: outputLimits}
+	return antigravityModelCapabilityHints{WebSearchModelIDs: webSearchModels}
 }
 
 func applyAntigravityFetchedModelCapabilities(models []*ModelInfo, hints antigravityModelCapabilityHints) []*ModelInfo {

@@ -31,5 +31,14 @@ func SanitizeAntigravityHeaders(req *http.Request) {
 		}
 	}
 	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Connection", "keep-alive")
 	req.Close = false
+}
+
+// ApplyAntigravityOAuthHeaders mirrors the plain httpx client used by agy2api
+// for OAuth and Google user-info requests.
+func ApplyAntigravityOAuthHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", "python-httpx/0.28.1")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Connection", "keep-alive")
 }

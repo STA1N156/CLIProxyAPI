@@ -20,7 +20,7 @@ import (
 // TestAntigravityBuildRequestKeepsConnectionAlive guards the regression where the
 // upstream request forced "Connection: close", which discarded every established
 // TCP + TLS session and made connection pooling impossible. The native Antigravity
-// client omits the Connection header entirely.
+// client uses Connection: keep-alive.
 func TestAntigravityBuildRequestKeepsConnectionAlive(t *testing.T) {
 	e := &AntigravityExecutor{}
 	auth := &cliproxyauth.Auth{Metadata: map[string]any{"project_id": "project-1"}}
@@ -39,8 +39,8 @@ func TestAntigravityBuildRequestKeepsConnectionAlive(t *testing.T) {
 			if req.Close {
 				t.Fatal("Antigravity upstream request must not force Connection: close")
 			}
-			if v := req.Header.Get("Connection"); v != "" {
-				t.Fatalf("Antigravity upstream request must not send a Connection header, got %q", v)
+			if v := req.Header.Get("Connection"); v != "keep-alive" {
+				t.Fatalf("Antigravity upstream request must send keep-alive, got %q", v)
 			}
 		})
 	}

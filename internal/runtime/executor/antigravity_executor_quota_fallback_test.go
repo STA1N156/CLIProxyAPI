@@ -140,13 +140,13 @@ func TestAntigravityQuotaFallbackAcrossCredentials(t *testing.T) {
 			for i, body := range bodies {
 				parts := gjson.Get(body, "request.contents.0.parts")
 				if tc.move && (i == 1 || i == 2) {
-					if gjson.Get(body, "request.systemInstruction").Exists() || parts.Get("#").Int() != 5 || parts.Get("0.text").String() != "<USER_REQUEST>\nsystem-a" || parts.Get("1.text").String() != "system-b" || !strings.HasPrefix(parts.Get("3.text").String(), "question\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n") || parts.Get("4.inlineData.data").String() != "aW1hZ2U=" {
+					if gjson.Get(body, "request.systemInstruction").Exists() || parts.Get("#").Int() != 5 || parts.Get("0.text").String() != "system-a" || parts.Get("1.text").String() != "system-b" || parts.Get("3.text").String() != "question" || parts.Get("4.inlineData.data").String() != "aW1hZ2U=" {
 						t.Fatalf("retry %d did not relocate the prompt exactly once: %s", i, body)
 					}
-				} else if gjson.Get(body, "request.systemInstruction.parts.0.text").String() != "system-a" || !strings.HasPrefix(parts.Get("0.text").String(), "<USER_REQUEST>\nquestion\n</USER_REQUEST>\n") || parts.Get("#").Int() != 2 {
+				} else if gjson.Get(body, "request.systemInstruction.parts.0.text").String() != "system-a" || parts.Get("0.text").String() != "question" || parts.Get("#").Int() != 2 {
 					t.Fatalf("request %d changed without a matching 429: %s", i, body)
 				}
-				if !strings.HasPrefix(gjson.Get(body, "request.contents.2.parts.0.text").String(), "<USER_REQUEST>\nfollow-up\n</USER_REQUEST>\n") {
+				if gjson.Get(body, "request.contents.2.parts.0.text").String() != "follow-up" {
 					t.Fatal("later user input changed")
 				}
 				if gjson.Get(body, "request.generationConfig").Raw != gjson.Get(bodies[0], "request.generationConfig").Raw {

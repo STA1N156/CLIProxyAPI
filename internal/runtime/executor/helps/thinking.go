@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	agythinking "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/antigravity"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
@@ -14,9 +15,14 @@ import (
 func ApplyThinkingWithSourcePayload(body, currentSourcePayload, originalSourcePayload []byte, model, fromFormat, toFormat, providerKey string) ([]byte, error) {
 	if toFormat == "antigravity" {
 		body = NormalizeAntigravityThinking(body)
+		body = agythinking.NormalizeHubThinking(body, model)
 	}
 	summary := translatedRequestSummaryConfig(body, currentSourcePayload, originalSourcePayload, model, fromFormat, toFormat)
-	return thinking.ApplyThinkingWithSummary(body, model, fromFormat, toFormat, providerKey, summary)
+	result, err := thinking.ApplyThinkingWithSummary(body, model, fromFormat, toFormat, providerKey, summary)
+	if err == nil && toFormat == "antigravity" {
+		result = agythinking.NormalizeHubThinking(result, model)
+	}
+	return result, err
 }
 
 // translatedRequestSummaryConfig gives the translated target payload precedence

@@ -568,7 +568,7 @@ func TestAntigravityBuildRequestStripsPropertyNamesFromOutboundBody(t *testing.T
 		for _, modelName := range []string{"gemini-3.1-pro", "claude-opus-4-6"} {
 			t.Run(shapeName+"_"+modelName, func(t *testing.T) {
 				payload := []byte(`{"request":{
-					"contents":[{"role":"model","parts":[{"functionCall":{"name":"t","args":{"propertyNames":"keep-me"}}}]}],
+					"contents":[{"role":"model","parts":[{"functionCall":{"name":"t","args":{"propertyNames":"keep-me"}}}]},{"role":"user","parts":[{"text":"continue"}]}],
 					"tools":[{"function_declarations":[{"name":"t","parametersJsonSchema":` + schema + `}]}],
 					"generationConfig":{"responseSchema":` + schema + `}
 				}}`)
