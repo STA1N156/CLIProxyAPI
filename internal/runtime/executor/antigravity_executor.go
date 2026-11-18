@@ -59,12 +59,11 @@ func NewAntigravityExecutor(cfg *config.Config) *AntigravityExecutor {
 	return &AntigravityExecutor{cfg: cfg}
 }
 
-func (e *AntigravityExecutor) obfuscateSensitiveWords(payload []byte) []byte {
+func (e *AntigravityExecutor) filterSensitiveWords(payload []byte) []byte {
 	if e == nil || e.cfg == nil || len(e.cfg.Antigravity.SensitiveWords) == 0 {
 		return payload
 	}
-	matcher := helps.BuildSensitiveWordMatcher(e.cfg.Antigravity.SensitiveWords)
-	return helps.ObfuscateSensitiveWordsInSystemInstruction(payload, matcher)
+	return helps.FilterAntigravitySensitiveWords(payload, e.cfg.Antigravity.SensitiveWords)
 }
 
 func ensureAntigravityGeminiLeadingUserContent(modelName string, payload []byte) []byte {
@@ -514,6 +513,8 @@ func (e *AntigravityExecutor) PrepareRequest(req *http.Request, auth *cliproxyau
 		return statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", resolveUserAgent(auth))
+	misc.SanitizeAntigravityHeaders(req)
 	return nil
 }
 

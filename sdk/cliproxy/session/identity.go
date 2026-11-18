@@ -29,6 +29,7 @@ type canonicalRoot struct {
 	Version      string          `json:"version"`
 	Format       string          `json:"format"`
 	CallerScope  string          `json:"caller_scope"`
+	Model        string          `json:"model,omitempty"`
 	Instructions []string        `json:"instructions,omitempty"`
 	User         []canonicalPart `json:"user,omitempty"`
 	Resource     string          `json:"resource,omitempty"`
@@ -96,6 +97,15 @@ func DerivedID(metadata map[string]any) string {
 
 // Enrich derives a session identity once and places it in both request and option metadata.
 func Enrich(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
+	return enrich(req, opts, "")
+}
+
+// EnrichAntigravity derives a model-specific identity for credential affinity and upstream requests.
+func EnrichAntigravity(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
+	return enrich(req, opts, strings.TrimSpace(req.Model))
+}
+
+func enrich(req cliproxyexecutor.Request, opts cliproxyexecutor.Options, model string) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
 	payload := opts.OriginalRequest
 	if len(payload) == 0 && len(req.Payload) > 0 {
 		opts.OriginalRequest = bytes.Clone(req.Payload)
@@ -122,7 +132,7 @@ func Enrich(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (clipro
 		if callerScope == "" {
 			callerScope = metadataString(req.Metadata, cliproxyexecutor.CallerScopeMetadataKey)
 		}
-		derivedID = DeriveID(opts.SourceFormat, payload, callerScope)
+		derivedID = deriveID(opts.SourceFormat, payload, callerScope, model)
 	}
 	if derivedID == "" {
 		return req, opts
@@ -144,7 +154,7 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 	// Parsing without copying matters here: this runs on every request and the
 	// payload can be multiple megabytes.
 	root := util.ParseGJSONBytesNoCopy(payload)
-	for _, path := range []string{"session_id", "sessionId", "conversation_id", "prompt_cache_key"} {
+	for _, path := range []string{"session_id", "sessionId", "request.session_id", "request.sessionId", "conversation_id", "prompt_cache_key"} {
 		if NormalizeExplicitID(root.Get(path).String()) != "" {
 			return true
 		}
@@ -179,6 +189,15 @@ func headerValue(headers map[string][]string, name string) string {
 
 // DeriveID builds a stable identity from leading instructions and the first complete user input.
 func DeriveID(format sdktranslator.Format, payload []byte, callerScope string) string {
+	return deriveID(format, payload, callerScope, "")
+}
+
+// DeriveAntigravityID folds the model and leading inputs into the conversation identity.
+func DeriveAntigravityID(format sdktranslator.Format, payload []byte, callerScope, model string) string {
+	return deriveID(format, payload, callerScope, model)
+}
+
+func deriveID(format sdktranslator.Format, payload []byte, callerScope, model string) string {
 	if len(payload) == 0 {
 		return ""
 	}
@@ -191,31 +210,45 @@ func DeriveID(format sdktranslator.Format, payload []byte, callerScope string) s
 		Version:     identityVersion,
 		Format:      format.String(),
 		CallerScope: strings.TrimSpace(callerScope),
+		Model:       strings.ToLower(strings.TrimSpace(model)),
 	}
-	if sourceFormatEqual(format, sdktranslator.FormatGemini) {
+	antigravity := root.Model != ""
+	if antigravity && sourceFormatEqual(format, sdktranslator.FormatAntigravity) {
+		if inner, ok := body["request"].(map[string]any); ok {
+			body = inner
+		}
+	}
+	if sourceFormatEqual(format, sdktranslator.FormatGemini) || sourceFormatEqual(format, sdktranslator.FormatAntigravity) {
 		root.Resource = stringField(body, "cachedContent", "cached_content")
 	}
 
 	switch {
-	case sourceFormatEqual(format, sdktranslator.FormatGemini):
-		root.Instructions, root.User = geminiRoot(body)
+	case sourceFormatEqual(format, sdktranslator.FormatGemini), antigravity && sourceFormatEqual(format, sdktranslator.FormatAntigravity):
+		root.Instructions, root.User = geminiRoot(body, antigravity)
 	case sourceFormatEqual(format, sdktranslator.FormatInteractions):
-		root.Instructions, root.User = interactionsRoot(body)
+		root.Instructions, root.User = interactionsRoot(body, antigravity)
 	case sourceFormatEqual(format, sdktranslator.FormatOpenAIResponse), sourceFormatEqual(format, sdktranslator.FormatCodex):
-		root.Instructions, root.User = responsesRoot(body)
+		root.Instructions, root.User = responsesRoot(body, antigravity)
 	case sourceFormatEqual(format, sdktranslator.FormatClaude):
-		root.Instructions, root.User = messagesRoot(body, true)
+		root.Instructions, root.User = messagesRoot(body, true, antigravity)
 	default:
-		root.Instructions, root.User = messagesRoot(body, false)
+		root.Instructions, root.User = messagesRoot(body, false, antigravity)
+	}
+	if antigravity {
+		return hashAntigravityRoot(root)
 	}
 	if len(root.User) == 0 {
 		return ""
 	}
+	for i, instruction := range root.Instructions {
+		root.Instructions[i] = truncateRunes(instruction, instructionRuneLimit)
+	}
 	return hashRoot(root)
 }
 
-func messagesRoot(body map[string]any, includeTopLevelSystem bool) ([]string, []canonicalPart) {
+func messagesRoot(body map[string]any, includeTopLevelSystem, includeSecond bool) ([]string, []canonicalPart) {
 	instructions := make([]string, 0)
+	var user []canonicalPart
 	if includeTopLevelSystem {
 		if system, ok := body["system"]; ok {
 			instructions = appendInstruction(instructions, system)
@@ -228,18 +261,32 @@ func messagesRoot(body map[string]any, includeTopLevelSystem bool) ([]string, []
 			continue
 		}
 		role := normalizedString(message["role"])
+		if !includeSecond && len(user) > 0 && role != "user" {
+			break
+		}
 		switch role {
 		case "system", "developer":
 			instructions = appendInstruction(instructions, message["content"])
-		case "user":
-			return instructions, canonicalParts(message["content"])
+		case "user", "assistant", "model":
+			if role != "user" && !includeSecond {
+				continue
+			}
+			value := contentValue(message)
+			if includeSecond {
+				value = antigravityMessageValue(message)
+			}
+			user = appendSessionInput(user, value)
+			if !includeSecond || hasSecondSessionInput(user) {
+				return instructions, user
+			}
 		}
 	}
-	return instructions, nil
+	return instructions, user
 }
 
-func responsesRoot(body map[string]any) ([]string, []canonicalPart) {
+func responsesRoot(body map[string]any, includeSecond bool) ([]string, []canonicalPart) {
 	instructions := make([]string, 0)
+	var user []canonicalPart
 	if value, ok := body["instructions"]; ok {
 		instructions = appendInstruction(instructions, value)
 	}
@@ -257,34 +304,58 @@ func responsesRoot(body map[string]any) ([]string, []canonicalPart) {
 			continue
 		}
 		role := normalizedString(item["role"])
+		if includeSecond && normalizedString(item["type"]) == "function_call" {
+			user = appendSessionInput(user, item)
+			if hasSecondSessionInput(user) {
+				return instructions, user
+			}
+			continue
+		}
+		if !includeSecond && len(user) > 0 && role != "user" {
+			break
+		}
 		switch role {
 		case "system", "developer":
 			instructions = appendInstruction(instructions, item["content"])
-		case "user":
-			return instructions, canonicalParts(item["content"])
+		case "user", "assistant", "model":
+			if role != "user" && !includeSecond {
+				continue
+			}
+			user = appendSessionInput(user, contentValue(item))
+			if !includeSecond || hasSecondSessionInput(user) {
+				return instructions, user
+			}
 		}
 	}
-	return instructions, nil
+	return instructions, user
 }
 
-func geminiRoot(body map[string]any) ([]string, []canonicalPart) {
+func geminiRoot(body map[string]any, includeSecond bool) ([]string, []canonicalPart) {
 	instructions := make([]string, 0)
+	var user []canonicalPart
 	if value, ok := firstField(body, "systemInstruction", "system_instruction"); ok {
 		instructions = appendInstruction(instructions, contentValue(value))
 	}
 	contents, _ := body["contents"].([]any)
 	for _, rawContent := range contents {
 		content, okContent := rawContent.(map[string]any)
-		if !okContent || normalizedString(content["role"]) != "user" {
+		if !okContent || (!includeSecond && normalizedString(content["role"]) != "user") {
+			if len(user) > 0 {
+				break
+			}
 			continue
 		}
-		return instructions, canonicalParts(contentValue(content))
+		user = appendSessionInput(user, contentValue(content))
+		if !includeSecond || hasSecondSessionInput(user) {
+			break
+		}
 	}
-	return instructions, nil
+	return instructions, user
 }
 
-func interactionsRoot(body map[string]any) ([]string, []canonicalPart) {
+func interactionsRoot(body map[string]any, includeSecond bool) ([]string, []canonicalPart) {
 	instructions := make([]string, 0)
+	var user []canonicalPart
 	if value, ok := firstField(body, "system_instruction", "systemInstruction"); ok {
 		instructions = appendInstruction(instructions, contentValue(value))
 	}
@@ -297,7 +368,11 @@ func interactionsRoot(body map[string]any) ([]string, []canonicalPart) {
 	}
 	for _, entry := range flattenInteractionEntries(input) {
 		if text, okString := entry.(string); okString {
-			return instructions, canonicalParts(text)
+			user = appendSessionInput(user, text)
+			if !includeSecond || hasSecondSessionInput(user) {
+				return instructions, user
+			}
+			continue
 		}
 		step, okStep := entry.(map[string]any)
 		if !okStep {
@@ -305,15 +380,41 @@ func interactionsRoot(body map[string]any) ([]string, []canonicalPart) {
 		}
 		role := normalizedString(step["role"])
 		stepType := normalizedString(step["type"])
+		isUser := role == "user" || stepType == "user_input" || ((stepType == "message" || stepType == "") && role == "")
+		if !includeSecond && len(user) > 0 && !isUser {
+			break
+		}
 		if role == "system" || role == "developer" || stepType == "system_instruction" || stepType == "developer_instruction" {
 			instructions = appendInstruction(instructions, contentValue(step))
 			continue
 		}
-		if role == "user" || stepType == "user_input" || ((stepType == "message" || stepType == "") && role == "") {
-			return instructions, canonicalParts(contentValue(step))
+		if isUser || includeSecond {
+			user = appendSessionInput(user, contentValue(step))
+			if !includeSecond || hasSecondSessionInput(user) {
+				return instructions, user
+			}
 		}
 	}
-	return instructions, nil
+	return instructions, user
+}
+
+// Mark the boundary so one multipart message and two separate messages do not collide.
+func appendSessionInput(user []canonicalPart, value any) []canonicalPart {
+	parts := canonicalParts(value)
+	if len(user) == 0 || len(parts) == 0 {
+		return append(user, parts...)
+	}
+	user = append(user, canonicalPart{Kind: "message_boundary"})
+	return append(user, parts...)
+}
+
+func hasSecondSessionInput(user []canonicalPart) bool {
+	for _, part := range user {
+		if part.Kind == "message_boundary" {
+			return true
+		}
+	}
+	return false
 }
 
 func flattenInteractionEntries(value any) []any {
@@ -368,7 +469,7 @@ func appendInstruction(instructions []string, value any) []string {
 	if builder.Len() == 0 {
 		return instructions
 	}
-	return append(instructions, truncateRunes(builder.String(), instructionRuneLimit))
+	return append(instructions, builder.String())
 }
 
 func canonicalParts(value any) []canonicalPart {

@@ -189,22 +189,22 @@ func TestSanitizeAntigravityGeminiRequestSignaturesFinalizesParallelCalls(t *tes
 	}
 }
 
-func TestAntigravitySensitiveWordsObfuscatesSystemInstructionOnly(t *testing.T) {
+func TestAntigravitySensitiveWordsFiltersTextCaseSensitively(t *testing.T) {
 	executor := NewAntigravityExecutor(&config.Config{
 		Antigravity: config.AntigravityConfig{SensitiveWords: []string{"proxy"}},
 	})
-	payload := []byte(`{"request":{"systemInstruction":{"parts":[{"text":"Use proxy safely"}]},"contents":[{"role":"user","parts":[{"text":"proxy remains unchanged"}]}]}}`)
+	payload := []byte(`{"request":{"systemInstruction":{"parts":[{"text":"Use proxy Proxy safely"}]},"contents":[{"role":"user","parts":[{"text":"proxy remains unchanged"}]}]}}`)
 
-	got := executor.obfuscateSensitiveWords(payload)
-	if systemText := gjson.GetBytes(got, "request.systemInstruction.parts.0.text").String(); systemText != "Use p\u200Broxy safely" {
-		t.Fatalf("system instruction = %q, want zero-width obfuscation", systemText)
+	got := executor.filterSensitiveWords(payload)
+	if systemText := gjson.GetBytes(got, "request.systemInstruction.parts.0.text").String(); systemText != "Use  Proxy safely" {
+		t.Fatalf("system instruction = %q, want case-sensitive removal", systemText)
 	}
-	if contentText := gjson.GetBytes(got, "request.contents.0.parts.0.text").String(); contentText != "proxy remains unchanged" {
-		t.Fatalf("content text = %q, want unchanged", contentText)
+	if contentText := gjson.GetBytes(got, "request.contents.0.parts.0.text").String(); contentText != " remains unchanged" {
+		t.Fatalf("content text = %q, want filtered text", contentText)
 	}
 }
 
-func TestAntigravityStreamObfuscatesSensitiveSystemInstruction(t *testing.T) {
+func TestAntigravityStreamFiltersSensitiveSystemInstruction(t *testing.T) {
 	captured := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, errRead := io.ReadAll(r.Body)
@@ -248,7 +248,7 @@ func TestAntigravityStreamObfuscatesSensitiveSystemInstruction(t *testing.T) {
 
 	body := <-captured
 	got := gjson.GetBytes(body, "request.systemInstruction.parts.0.text").String()
-	want := "You are H\u200Bermes Agent, an intelligent AI assistant created by N\u200Bous Research."
+	want := "You are  Agent, an intelligent AI assistant created by ."
 	if got != want {
 		t.Fatalf("system instruction = %q, want %q; body=%s", got, want, body)
 	}

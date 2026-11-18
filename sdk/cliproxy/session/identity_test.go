@@ -10,6 +10,23 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
+func TestDeriveAntigravityIDSeparatesConversationsAndKeepsHistoryPrefix(t *testing.T) {
+	root := `{"systemInstruction":{"parts":[{"text":"shared instructions"}]},"contents":[{"role":"user","parts":[{"text":"first"}]}`
+	model := "gemini-3.5-flash-lite"
+	derive := func(input, name string) string {
+		return DeriveAntigravityID(sdktranslator.FormatGemini, []byte(input), "caller", name)
+	}
+	second := root + `,{"role":"model","parts":[{"text":"answer"}]}`
+	anchor := derive(second+`]}`, model)
+	if anchor == "" || anchor != derive(second+`,{"role":"user","parts":[{"text":"next"}]}]}`, model) {
+		t.Fatal("appended history changed the two-message anchor")
+	}
+	other := derive(root+`,{"role":"model","parts":[{"text":"another answer"}]}]}`, model)
+	if anchor == other || anchor == derive(second+`]}`, "gemini-3.8-flash-medium") {
+		t.Fatal("distinct leading messages or models shared a session")
+	}
+}
+
 func TestDeriveIDStableAcrossConversationGrowth(t *testing.T) {
 	t.Parallel()
 

@@ -81,12 +81,7 @@ func (s antigravityReasoningReplayScope) valid() bool {
 func antigravityReasoningReplayScopeFromPayload(modelName string, payload []byte) antigravityReasoningReplayScope {
 	sessionID := antigravityReplaySessionIDFromPayload(payload)
 	if sessionID == "" {
-		if stable := strings.TrimSpace(generateStableSessionID(payload)); stable != "" {
-			sessionID = strings.TrimPrefix(stable, "-")
-			if sessionID == "" {
-				sessionID = stable
-			}
-		}
+		sessionID = strings.TrimPrefix(deriveAntigravityPayloadSessionID(modelName, payload), "-")
 	}
 	if sessionID == "" {
 		return antigravityReasoningReplayScope{}

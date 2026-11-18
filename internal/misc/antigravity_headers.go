@@ -1,0 +1,35 @@
+package misc
+
+import (
+	"net/http"
+	"strings"
+)
+
+// IsAntigravityTraceHeader reports which downstream headers the Hub forwards.
+func IsAntigravityTraceHeader(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if strings.HasPrefix(name, "x-b3-") {
+		return true
+	}
+	switch name {
+	case "traceparent", "tracestate", "x-cloud-trace-context", "x-goog-request-params", "x-goog-user-project", "x-request-id":
+		return true
+	}
+	return false
+}
+
+// SanitizeAntigravityHeaders removes client-only and hop-by-hop headers.
+// Leave Accept-Encoding to net/http so automatic gzip decoding stays enabled.
+func SanitizeAntigravityHeaders(req *http.Request) {
+	for name := range req.Header {
+		switch strings.ToLower(name) {
+		case "authorization", "content-type", "user-agent", "accept":
+			continue
+		}
+		if !IsAntigravityTraceHeader(name) {
+			delete(req.Header, name)
+		}
+	}
+	req.Header.Set("Accept", "*/*")
+	req.Close = false
+}

@@ -16,8 +16,8 @@ import (
 
 func TestAntigravityBuildRequest_SanitizesGeminiToolSchema(t *testing.T) {
 	body := buildRequestBodyFromPayload(t, "gemini-2.5-pro")
-	if _, ok := body["requestType"]; ok {
-		t.Fatal("ordinary requests should omit requestType")
+	if got := body["requestType"]; got != "agent" {
+		t.Fatalf("requestType = %v, want agent", got)
 	}
 
 	decl := extractFirstFunctionDeclaration(t, body)
@@ -32,10 +32,10 @@ func TestAntigravityBuildRequest_SanitizesGeminiToolSchema(t *testing.T) {
 	assertSchemaSanitizedAndPropertyPreserved(t, params)
 }
 
-func TestAntigravityBuildRequest_RemovesAgentRequestType(t *testing.T) {
+func TestAntigravityBuildRequest_ClassifiesTextAsChat(t *testing.T) {
 	body := buildRequestBodyFromRawPayload(t, "gemini-2.5-pro", []byte(`{"requestType":"agent","request":{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}}`))
-	if _, ok := body["requestType"]; ok {
-		t.Fatal("agent requestType should be removed")
+	if got := body["requestType"]; got != "chat" {
+		t.Fatalf("requestType = %v, want chat", got)
 	}
 	request := body["request"].(map[string]any)
 	content := request["contents"].([]any)[0].(map[string]any)
@@ -54,6 +54,41 @@ func TestAntigravityBuildRequest_SanitizesAntigravityToolSchema(t *testing.T) {
 		t.Fatalf("parameters missing or invalid type")
 	}
 	assertSchemaSanitizedAndPropertyPreserved(t, params)
+}
+
+func TestAntigravityBuildRequest_NormalizesClaudeToolRequest(t *testing.T) {
+	raw := []byte(`{"request":{"system_instruction":{"parts":[{"text":"instructions"}]},"tools":[{"function_declarations":[{"name":"a","parameters":{"type":"object","properties":{"type":{"type":"string"}}}},{"name":"b"}]}],"toolConfig":{"functionCallingConfig":{"mode":"ANY"}},"thinking_config":{"thinking_budget":512},"contents":[{"role":"model","parts":[{"functionCall":{"name":"a","args":{"b":2,"a":1}}}]},{"role":"user","parts":[{"functionResponse":{"name":"a","response":{"ok":true}}}]}]}}`)
+	build := func(input []byte) map[string]any {
+		return buildRequestBodyFromRawPayload(t, "claude-opus-4-6", input)["request"].(map[string]any)
+	}
+	request := build(raw)
+	tools := request["tools"].([]any)
+	first := tools[0].(map[string]any)["functionDeclarations"].([]any)
+	second := tools[1].(map[string]any)["functionDeclarations"].([]any)
+	if len(tools) != 2 || len(first) != 1 || len(second) != 1 || second[0].(map[string]any)["name"] != "b" {
+		t.Fatalf("tool declarations were not split in order: %v", tools)
+	}
+	schema := first[0].(map[string]any)["parameters"].(map[string]any)
+	if schema["type"] != "OBJECT" || schema["properties"].(map[string]any)["type"].(map[string]any)["type"] != "STRING" {
+		t.Fatalf("schema types were not normalized: %v", schema)
+	}
+	if request["systemInstruction"].(map[string]any)["role"] != "user" || request["system_instruction"] != nil {
+		t.Fatalf("system instruction was not normalized")
+	}
+	if request["generationConfig"].(map[string]any)["thinkingConfig"] != nil ||
+		request["toolConfig"].(map[string]any)["functionCallingConfig"].(map[string]any)["mode"] != "ANY" {
+		t.Fatal("Claude forced tool mode must be retained without thinking")
+	}
+	part := func(request map[string]any, index int, name string) map[string]any {
+		content := request["contents"].([]any)[index].(map[string]any)
+		return content["parts"].([]any)[0].(map[string]any)[name].(map[string]any)
+	}
+	call := part(request, 0, "functionCall")
+	response := part(request, 1, "functionResponse")
+	reordered := build([]byte(strings.Replace(string(raw), `"b":2,"a":1`, `"a":1,"b":2`, 1)))
+	if id := call["id"]; id == nil || id != response["id"] || id != part(reordered, 0, "functionCall")["id"] {
+		t.Fatal("tool IDs must be stable and paired")
+	}
 }
 
 func TestAntigravityBuildRequest_SkipsSchemaSanitizationWithoutToolsField(t *testing.T) {
@@ -510,9 +545,9 @@ func extractFirstFunctionDeclaration(t *testing.T, body map[string]any) map[stri
 	if !ok {
 		t.Fatalf("first tool invalid type")
 	}
-	decls, ok := tool["function_declarations"].([]any)
+	decls, ok := tool["functionDeclarations"].([]any)
 	if !ok || len(decls) == 0 {
-		t.Fatalf("function_declarations missing or empty")
+		t.Fatalf("functionDeclarations missing or empty")
 	}
 	decl, ok := decls[0].(map[string]any)
 	if !ok {

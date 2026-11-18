@@ -3,6 +3,7 @@ package helps
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"strconv"
 	"strings"
 
@@ -48,13 +49,25 @@ func stableProviderSessionUUID(provider string, kind string, identityValue strin
 
 // DerivedAntigravitySessionID maps a derived session identity to Antigravity's negative decimal format.
 func DerivedAntigravitySessionID(metadataSets ...map[string]any) string {
-	derivedID := DerivedSessionID(metadataSets...)
-	if derivedID == "" {
+	return AntigravitySessionID(DerivedSessionID(metadataSets...))
+}
+
+// AntigravitySessionID converts a routing identity to the upstream decimal format.
+func AntigravitySessionID(identity string) string {
+	if identity == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte("cli-proxy-api:antigravity:derived-session\x00" + derivedID))
+	sum := AntigravityIdentityDigest(identity)
 	value := int64(binary.BigEndian.Uint64(sum[:8])) & 0x7FFFFFFFFFFFFFFF
 	return "-" + strconv.FormatInt(value, 10)
+}
+
+// AntigravityIdentityDigest reuses the routing anchor for both upstream IDs.
+func AntigravityIdentityDigest(identity string) [32]byte {
+	if raw, err := hex.DecodeString(strings.TrimPrefix(identity, "ctx:v1:")); err == nil && len(raw) == 32 {
+		return [32]byte(raw)
+	}
+	return sha256.Sum256([]byte(identity))
 }
 
 func metadataString(metadata map[string]any, key string) string {

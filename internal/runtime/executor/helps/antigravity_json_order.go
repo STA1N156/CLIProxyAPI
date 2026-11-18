@@ -10,10 +10,10 @@ import (
 // remain raw JSON so caller-defined objects retain their values and ordering.
 var antigravityJSONOrder = map[string][]string{
 	"":                          {"project", "requestId", "request", "model", "userAgent", "requestType"},
-	"request":                   {"contents", "systemInstruction", "tools", "labels", "generationConfig", "sessionId"},
+	"request":                   {"contents", "systemInstruction", "tools", "toolConfig", "labels", "generationConfig", "sessionId"},
 	"request.contents[]":        {"role", "parts"},
 	"request.systemInstruction": {"role", "parts"},
-	"request.generationConfig":  {"maxOutputTokens", "thinkingConfig"},
+	"request.generationConfig":  {"candidateCount", "maxOutputTokens", "thinkingConfig", "temperature", "topP", "topK"},
 	"request.generationConfig.thinkingConfig":           {"includeThoughts", "thinkingLevel", "thinkingBudget"},
 	"request.tools[]":                                   {"functionDeclarations"},
 	"request.tools[].functionDeclarations[]":            {"name", "description", "parameters"},

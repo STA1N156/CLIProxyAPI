@@ -246,6 +246,7 @@ func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent)
+	misc.SanitizeAntigravityHeaders(req)
 
 	resp, errDo := o.httpClient.Do(req)
 	if errDo != nil {
@@ -321,6 +322,7 @@ func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID s
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", userAgent)
+		misc.SanitizeAntigravityHeaders(req)
 
 		resp, errDo := o.httpClient.Do(req)
 		if errDo != nil {

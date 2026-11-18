@@ -156,8 +156,8 @@ func TestAntigravityRequestIdentityAcrossHistoryAndCredentialRetry(t *testing.T)
 		request string
 		outer   string
 	}{
-		{first, "project-b", "0", "0", "1"}, {next, "project-a", "2", "1", "3"},
-		{[]byte(`{"request":{"sessionId":"-123","contents":[{"role":"user","parts":[{"text":"hello"}]},{"role":"model","parts":[{"functionCall":{"name":"a"}},{"functionCall":{"name":"b"}}]},{"role":"model","parts":[{"functionResponse":{"name":"a"}},{"functionResponse":{"name":"b"}}]}]}}`), "project-a", "3", "1", "4"},
+		{first, "project-b", "1", "1", "1"}, {next, "project-a", "2", "2", "2"},
+		{[]byte(`{"request":{"sessionId":"-123","contents":[{"role":"user","parts":[{"text":"hello"}]},{"role":"model","parts":[{"functionCall":{"name":"a"}},{"functionCall":{"name":"b"}}]},{"role":"model","parts":[{"functionResponse":{"name":"a"}},{"functionResponse":{"name":"b"}}]}]}}`), "project-a", "2", "2", "2"},
 	} {
 		b := geminiToAntigravity("gemini-3.5-flash-lite", row.payload, row.project)
 		for _, key := range []string{"cascade_id", "trajectory_id", "root_cascade_id"} {
@@ -183,7 +183,7 @@ func TestAntigravityRequestIdentityAcrossHistoryAndCredentialRetry(t *testing.T)
 		t.Fatal("different sessions share a cascade")
 	}
 	explicit := geminiToAntigravity("gemini-3.5-flash-lite", []byte(`{"request":{"sessionId":"-123","labels":{"cascade_id":"existing-cascade","trajectory_id":"existing-trajectory","root_cascade_id":"parent","last_step_index":"7","request_id":"existing-trajectory-3","custom":"keep"}}}`), "project-a")
-	if gjson.GetBytes(explicit, "request.labels.custom").String() != "keep" || gjson.GetBytes(explicit, "request.labels.request_id").String() != "existing-trajectory-3" || (!strings.Contains(gjson.GetBytes(explicit, "requestId").String(), "/existing-cascade/") || !strings.HasSuffix(gjson.GetBytes(explicit, "requestId").String(), "/8")) {
+	if gjson.GetBytes(explicit, "request.labels.custom").String() != "keep" || gjson.GetBytes(explicit, "request.labels.request_id").String() != "existing-trajectory-3" || (!strings.Contains(gjson.GetBytes(explicit, "requestId").String(), "/existing-cascade/") || !strings.HasSuffix(gjson.GetBytes(explicit, "requestId").String(), "/7")) {
 		t.Fatal("explicit trace labels were not preserved")
 	}
 }
@@ -205,7 +205,7 @@ func TestAntigravityIdentityRetainsModelUsageAndRefreshesEnums(t *testing.T) {
 			t.Fatal("model enum did not follow the refreshed credential catalog")
 		}
 	}
-	if gjson.GetBytes(helps.ApplyAntigravityModelEnum(got, "other-credential", "gemini-3.8-flash-medium"), "request.labels.model_enum").Exists() {
+	if gjson.GetBytes(helps.ApplyAntigravityModelEnum(got, "other-credential", "gemini-3.8-flash-medium"), "request.labels.model_enum").String() != "gemini-3.8-flash-medium" {
 		t.Fatal("model enum leaked across credentials")
 	}
 }

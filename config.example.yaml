@@ -284,7 +284,7 @@ codex:
 
 # Antigravity provider behavior.
 # antigravity:
-#   sensitive-words:             # optional: words to obfuscate with zero-width characters in system instructions
+#   sensitive-words:             # optional: case-sensitive literal words to remove from Antigravity text
 #     - "API"
 #     - "proxy"
 

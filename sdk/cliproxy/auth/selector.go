@@ -886,7 +886,7 @@ func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]
 	}
 
 	if len(payload) > 0 {
-		for _, path := range []string{"session_id", "sessionId"} {
+		for _, path := range []string{"session_id", "sessionId", "request.session_id", "request.sessionId"} {
 			if sid := normalizedSessionCandidate(gjson.GetBytes(payload, path).String()); sid != "" {
 				return "session:" + sid, ""
 			}

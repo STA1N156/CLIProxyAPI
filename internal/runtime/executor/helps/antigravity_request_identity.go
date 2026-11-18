@@ -87,22 +87,23 @@ func ApplyAntigravityOutputLimit(payload []byte, scope, model string) []byte {
 			limit = catalog.limits[model]
 		}
 	}
+	if limit == 0 && !gjson.GetBytes(payload, "request.generationConfig.maxOutputTokens").Exists() {
+		modelName := strings.ToLower(model)
+		switch {
+		case strings.Contains(modelName, "claude"):
+			limit = 64000
+		case strings.HasPrefix(modelName, "gemini-"):
+			limit = 65536
+		}
+	}
 	if limit > 0 {
 		payload, _ = sjson.SetBytes(payload, "request.generationConfig.maxOutputTokens", limit)
 	}
 	return payload
 }
 
-func antigravityTraceUUID(kind, identity string) string {
-	digest := sha256.Sum256([]byte("antigravity:" + kind + ":" + identity))
-	id := uuid.UUID(digest[:16])
-	id[6] = (id[6] & 0x0f) | 0x40
-	id[8] = (id[8] & 0x3f) | 0x80
-	return id.String()
-}
-
 // BindAntigravityRequestIdentity links trace labels and step counters to the request history.
-func BindAntigravityRequestIdentity(payload []byte, sessionID string) []byte {
+func BindAntigravityRequestIdentity(payload []byte, sessionID string, identities ...string) []byte {
 	labels := make(map[string]string)
 	gjson.GetBytes(payload, "request.labels").ForEach(func(key, value gjson.Result) bool {
 		labels[key.String()] = value.String()
@@ -110,42 +111,49 @@ func BindAntigravityRequestIdentity(payload []byte, sessionID string) []byte {
 	})
 	cascade := strings.TrimSpace(labels["cascade_id"])
 	if cascade == "" {
-		cascade = antigravityTraceUUID("cascade", sessionID)
+		digest := sha256.Sum256([]byte(sessionID))
+		cascade = fmt.Sprintf("%x", digest[:8])
 	}
 	trajectory := strings.TrimSpace(labels["trajectory_id"])
 	if trajectory == "" {
-		trajectory = antigravityTraceUUID("trajectory", cascade)
+		identity := sessionID
+		if len(identities) > 0 && identities[0] != "" {
+			identity = identities[0]
+		}
+		digest := AntigravityIdentityDigest(identity)
+		trajectory = uuid.UUID(digest[8:24]).String()
 	}
-	// A planner reply is one model request; each tool result is a separate step.
-	steps, requests := 0, 0
+	// Only completed model turns advance the next request step.
+	step := 1
 	gjson.GetBytes(payload, "request.contents").ForEach(func(_, content gjson.Result) bool {
-		responses := 0
-		content.Get("parts").ForEach(func(_, part gjson.Result) bool {
-			if part.Get("functionResponse").Exists() {
-				responses++
+		if role := content.Get("role").String(); role == "model" || role == "assistant" {
+			hasResponse := false
+			content.Get("parts").ForEach(func(_, part gjson.Result) bool {
+				hasResponse = part.Get("functionResponse").Exists() || part.Get("function_response").Exists()
+				return !hasResponse
+			})
+			if !hasResponse {
+				step++
 			}
-			return true
-		})
-		steps += max(1, responses)
-		if role := content.Get("role").String(); responses == 0 && (role == "model" || role == "assistant") {
-			requests++
 		}
 		return true
 	})
-	step, err := strconv.Atoi(labels["last_step_index"])
-	if err != nil || step < 0 {
-		step = max(0, steps-1)
+	if supplied, err := strconv.Atoi(labels["last_step_index"]); err == nil && supplied > 0 {
+		step = supplied
 	}
 	labels["cascade_id"], labels["trajectory_id"] = cascade, trajectory
 	if strings.TrimSpace(labels["root_cascade_id"]) == "" {
 		labels["root_cascade_id"] = cascade
 	}
 	labels["last_step_index"] = strconv.Itoa(step)
-	if strings.TrimSpace(labels["request_id"]) == "" {
-		labels["request_id"] = trajectory + "-" + strconv.Itoa(requests)
+	if labels["model_enum"] == "" {
+		labels["model_enum"] = gjson.GetBytes(payload, "model").String()
 	}
-	if requests > 0 && strings.TrimSpace(labels["last_execution_id"]) == "" {
-		if previous, ok := antigravityExecutions.Get(trajectory + "-" + strconv.Itoa(requests-1)); ok {
+	if strings.TrimSpace(labels["request_id"]) == "" {
+		labels["request_id"] = trajectory + "-" + strconv.Itoa(step)
+	}
+	if step > 1 && strings.TrimSpace(labels["last_execution_id"]) == "" {
+		if previous, ok := antigravityExecutions.Get(trajectory + "-" + strconv.Itoa(step-1)); ok {
 			labels["last_execution_id"] = previous
 		}
 	}
@@ -170,6 +178,6 @@ func BindAntigravityRequestIdentity(payload []byte, sessionID string) []byte {
 	labels["used_non_gemini_model"] = strconv.FormatBool(used&2 != 0)
 	raw, _ := json.Marshal(labels)
 	payload, _ = sjson.SetRawBytes(payload, "request.labels", raw)
-	payload, _ = sjson.SetBytes(payload, "requestId", fmt.Sprintf("agent/%s/%d/%s/%d", cascade, time.Now().UnixMilli(), trajectory, step+1))
+	payload, _ = sjson.SetBytes(payload, "requestId", fmt.Sprintf("agent/%s/%d/%s/%d", cascade, time.Now().UnixMilli(), trajectory, step))
 	return payload
 }

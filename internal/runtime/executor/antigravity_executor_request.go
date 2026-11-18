@@ -3,26 +3,25 @@ package executor
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
-func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string, derivedSessionIDs ...string) (*http.Request, error) {
+func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string, sessionIdentities ...string) (*http.Request, error) {
 	if token == "" {
 		return nil, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 	}
@@ -54,8 +53,10 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	if errProject != nil {
 		return nil, errProject
 	}
-	payload = geminiToAntigravity(modelName, payload, projectID, derivedSessionIDs...)
-	if reqType := gjson.GetBytes(payload, "requestType").String(); reqType == "" || reqType == "agent" {
+	payload = helps.NormalizeAntigravityThinking(payload)
+	payload = geminiToAntigravity(modelName, payload, projectID, sessionIdentities...)
+	reqType := util.GetGJSONBytesNoCopy(payload, "requestType").String()
+	if reqType == "chat" || reqType == "agent" {
 		payload = helps.ApplyAntigravityModelEnum(payload, antigravityTransportScope(auth), modelName)
 	}
 	if cliproxyauth.AntigravityQuotaFallbackEnabled(ctx) {
@@ -64,17 +65,23 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 
 	payload = helps.ApplyAntigravityOutputLimit(payload, antigravityTransportScope(auth), modelName)
 
-	useAntigravitySchema := strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini-3-pro") || strings.Contains(modelName, "gemini-3.1-pro")
+	mode := util.GetGJSONBytesNoCopy(payload, "request.toolConfig.functionCallingConfig.mode").String()
 	if antigravityRequestNeedsSchemaSanitization(payload) {
-		payload = []byte(sanitizeAntigravityRequestSchemas(string(payload), useAntigravitySchema))
+		payload = []byte(sanitizeAntigravityRequestSchemas(string(payload), strings.EqualFold(mode, "VALIDATED")))
 	}
-	if strings.Contains(modelName, "claude") {
-		payload, _ = sjson.SetBytes(payload, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+	payload = helps.SplitAntigravityFunctionTools(payload)
+	if strings.Contains(strings.ToLower(modelName), "claude") {
+		payload = helps.NormalizeAntigravityClaudeTools(payload)
+		const budgetPath = "request.generationConfig.thinkingConfig.thinkingBudget"
+		if strings.EqualFold(mode, "ANY") {
+			payload = helps.DeleteJSONField(payload, "request.generationConfig.thinkingConfig")
+		} else if budget := util.GetGJSONBytesNoCopy(payload, budgetPath); budget.Type == gjson.Number && budget.Num > 0 && budget.Num < 1024 {
+			payload, _ = sjson.SetBytes(payload, budgetPath, 1024)
+		}
 	}
 	payload = applyAntigravityNativeSignatureReplayIfNeeded(modelName, payload)
-	if gjson.GetBytes(payload, "requestType").String() == "agent" {
+	if reqType == "agent" || reqType == "chat" {
 		payload = helps.WrapAntigravityUserMessages(payload)
-		payload, _ = sjson.DeleteBytes(payload, "requestType")
 	}
 	payload = helps.OrderAntigravityJSON(payload)
 	var payloadLog []byte
@@ -90,9 +97,6 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
-	if stream {
-		httpReq.ContentLength = -1
-	}
 	if host := resolveHost(base); host != "" {
 		httpReq.Host = host
 	}
@@ -100,7 +104,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+	applyAntigravityRequestHeaders(httpReq, attrs)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -123,6 +127,21 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	return httpReq, nil
 }
 
+func applyAntigravityRequestHeaders(req *http.Request, attrs map[string]string) {
+	// Only tracing headers may be forwarded from the downstream client.
+	var tracing map[string]string
+	for key, value := range attrs {
+		if strings.HasPrefix(key, "header:") && misc.IsAntigravityTraceHeader(strings.TrimPrefix(key, "header:")) {
+			if tracing == nil {
+				tracing = make(map[string]string)
+			}
+			tracing[key] = value
+		}
+	}
+	util.ApplyCustomHeadersFromAttrs(req, tracing)
+	misc.SanitizeAntigravityHeaders(req)
+}
+
 // sanitizeAntigravityRequestSchemas cleans the JSON schemas carried by an Antigravity request.
 //
 // Cleaning is applied only to the payload locations that actually hold a JSON schema. The schema
@@ -130,7 +149,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 // data keys inside functionCall arguments replayed from conversation history. Running it over the
 // whole document silently mutated that history, so tools lost required argument fields and the
 // model imitated the corrupted examples on later turns.
-func sanitizeAntigravityRequestSchemas(payloadStr string, useAntigravitySchema bool) string {
+func sanitizeAntigravityRequestSchemas(payloadStr string, requirePlaceholder bool) string {
 	for _, base := range antigravityFunctionDeclarationPaths(payloadStr) {
 		oldPath := base + ".parametersJsonSchema"
 		if !gjson.Get(payloadStr, oldPath).Exists() {
@@ -145,12 +164,12 @@ func sanitizeAntigravityRequestSchemas(payloadStr string, useAntigravitySchema b
 	}
 
 	toolSchemaCleaner := func(schema string) string {
-		return util.CleanJSONSchemaForAntigravityTool(schema, useAntigravitySchema)
+		return util.CleanJSONSchemaForAntigravityTool(schema, requirePlaceholder)
 	}
 	responseSchemaCleaner := util.CleanJSONSchemaForAntigravityResponse
 
 	cleanNestedToolSchema := func(schemaRaw string) string {
-		return cleanNestedSchema(toolSchemaCleaner, schemaRaw)
+		return helps.UppercaseAntigravitySchemaTypes(cleanNestedSchema(toolSchemaCleaner, schemaRaw))
 	}
 	payloadStr = cleanAntigravitySchemasAtPaths(payloadStr, antigravityDeclarationSchemaPaths(payloadStr), cleanNestedToolSchema)
 	payloadStr = cleanAntigravitySchemasAtPaths(payloadStr, antigravityGenerationSchemaPaths(payloadStr), responseSchemaCleaner)
@@ -363,19 +382,22 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 	return ""
 }
 
-func geminiToAntigravity(modelName string, payload []byte, projectID string, derivedSessionIDs ...string) []byte {
+func geminiToAntigravity(modelName string, payload []byte, projectID string, sessionIdentities ...string) []byte {
 	template := bytes.Clone(payload)
 	template = helps.SetStringIfDifferent(template, "model", modelName)
 	template = helps.SetStringIfDifferent(template, "userAgent", "antigravity")
-
-	isImageModel := strings.Contains(modelName, "image")
-	reqType := strings.TrimSpace(gjson.GetBytes(template, "requestType").String())
-	if reqType == "" {
-		reqType = "agent"
-		if isImageModel {
-			reqType = "image_gen"
+	template = helps.NormalizeAntigravitySystemInstruction(template)
+	if toolConfig := util.GetGJSONBytesNoCopy(template, "toolConfig"); toolConfig.Exists() {
+		if !util.GetGJSONBytesNoCopy(template, "request.toolConfig").Exists() {
+			template, _ = sjson.SetRawBytes(template, "request.toolConfig", []byte(toolConfig.Raw))
 		}
-		template, _ = sjson.SetBytes(template, "requestType", reqType)
+		template, _ = sjson.DeleteBytes(template, "toolConfig")
+	}
+	reqType, hasTools := helps.AntigravityRequestType(template, modelName)
+	template = helps.SetStringIfDifferent(template, "requestType", reqType)
+	if !hasTools {
+		template = helps.DeleteJSONField(template, "request.toolConfig")
+		template = helps.DeleteJSONField(template, "request.tools")
 	}
 
 	if projectID != "" {
@@ -384,30 +406,34 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
 		template, _ = sjson.DeleteBytes(template, "project")
 	}
 
-	if isImageModel {
-		template, _ = sjson.SetBytes(template, "requestId", generateImageGenRequestID())
-	} else if reqType != "web_search" {
-		sessionID := strings.TrimSpace(gjson.GetBytes(template, "request.sessionId").String())
-		if sessionID == "" && len(derivedSessionIDs) > 0 {
-			sessionID = strings.TrimSpace(derivedSessionIDs[0])
+	if reqType != "web_search" {
+		sessionID := cliproxysession.NormalizeExplicitID(util.GetGJSONBytesNoCopy(template, "request.sessionId").String())
+		if sessionID == "" {
+			sessionID = cliproxysession.NormalizeExplicitID(util.GetGJSONBytesNoCopy(template, "request.session_id").String())
+		}
+		identity := sessionID
+		if sessionID == "" && len(sessionIdentities) > 0 {
+			identity = strings.TrimSpace(sessionIdentities[0])
 		}
 		if sessionID == "" {
-			sessionID = generateStableSessionID(payload)
+			if identity == "" {
+				identity = cliproxysession.DeriveAntigravityID(sdktranslator.FormatAntigravity, template, "", modelName)
+			}
+			if strings.HasPrefix(identity, "-") {
+				sessionID = identity
+			} else {
+				sessionID = helps.AntigravitySessionID(identity)
+			}
+			if sessionID == "" {
+				sessionID = generateSessionID()
+			}
 		}
 		template, _ = sjson.SetBytes(template, "request.sessionId", sessionID)
-		template = helps.BindAntigravityRequestIdentity(template, sessionID)
+		template = helps.BindAntigravityRequestIdentity(template, sessionID, identity)
 	}
 
-	template, _ = sjson.DeleteBytes(template, "request.safetySettings")
-	if toolConfig := gjson.GetBytes(template, "toolConfig"); toolConfig.Exists() && !gjson.GetBytes(template, "request.toolConfig").Exists() {
-		template, _ = sjson.SetRawBytes(template, "request.toolConfig", []byte(toolConfig.Raw))
-		template, _ = sjson.DeleteBytes(template, "toolConfig")
-	}
-	return template
-}
-
-func generateImageGenRequestID() string {
-	return fmt.Sprintf("image_gen/%d/%s/12", time.Now().UnixMilli(), uuid.NewString())
+	template = helps.DeleteJSONField(template, "request.session_id")
+	return helps.DeleteJSONField(template, "request.safetySettings")
 }
 
 func generateSessionID() string {
@@ -417,19 +443,21 @@ func generateSessionID() string {
 	return "-" + strconv.FormatInt(n, 10)
 }
 
-func generateStableSessionID(payload []byte) string {
-	contents := gjson.GetBytes(payload, "request.contents")
-	if contents.IsArray() {
-		for _, content := range contents.Array() {
-			if content.Get("role").String() == "user" {
-				text := content.Get("parts.0.text").String()
-				if text != "" {
-					h := sha256.Sum256([]byte(text))
-					n := int64(binary.BigEndian.Uint64(h[:8])) & 0x7FFFFFFFFFFFFFFF
-					return "-" + strconv.FormatInt(n, 10)
-				}
-			}
-		}
+func antigravityRequestSessionIdentity(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) string {
+	if identity := helps.DerivedSessionID(opts.Metadata, req.Metadata); identity != "" {
+		return identity
 	}
-	return generateSessionID()
+	original := opts.OriginalRequest
+	if len(original) == 0 {
+		original = req.Payload
+	}
+	identity := cliproxyauth.ExtractSessionID(opts.Headers, original, opts.Metadata)
+	if strings.HasPrefix(identity, "msg:") {
+		return ""
+	}
+	return identity
+}
+
+func deriveAntigravityPayloadSessionID(model string, payload []byte) string {
+	return helps.AntigravitySessionID(cliproxysession.DeriveAntigravityID(sdktranslator.FormatAntigravity, payload, "", model))
 }

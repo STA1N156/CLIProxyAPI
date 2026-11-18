@@ -12,6 +12,9 @@ import (
 // payload. currentSourcePayload is the payload that was translated, while
 // originalSourcePayload retains intent removed by an earlier interceptor.
 func ApplyThinkingWithSourcePayload(body, currentSourcePayload, originalSourcePayload []byte, model, fromFormat, toFormat, providerKey string) ([]byte, error) {
+	if toFormat == "antigravity" {
+		body = NormalizeAntigravityThinking(body)
+	}
 	summary := translatedRequestSummaryConfig(body, currentSourcePayload, originalSourcePayload, model, fromFormat, toFormat)
 	return thinking.ApplyThinkingWithSummary(body, model, fromFormat, toFormat, providerKey, summary)
 }
