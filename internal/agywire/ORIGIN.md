@@ -8,6 +8,7 @@ Import paths and comments were adapted. Added files `agent/embedded.go`,
 `agent/client_schema.go` and `agent/builtin.go` implement the CPA input/output
 bridge and the reference gateway's client-tool adaptation. CPA supplies the HTTP
 client and token provider. The exact resource-exhausted retry remains owned by CPA.
+Generation requests use `requestType: "chat"` by operator choice.
 
 The transport uses native `crypto/tls` and HTTP/1.1 with Go revision
 `298f53e483ef15096a05b1d3017cb9d4207cb327`, matching the reference build.

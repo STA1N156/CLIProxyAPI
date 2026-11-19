@@ -66,7 +66,7 @@ func TestAntigravityExecuteStreamReusesUpstreamConnection(t *testing.T) {
 			return
 		}
 		raw, _ := io.ReadAll(r.Body)
-		if gjson.GetBytes(raw, "requestType").String() == "agent" {
+		if gjson.GetBytes(raw, "requestType").String() == "chat" {
 			mu.Lock()
 			remotes[r.RemoteAddr]++
 			connectionHeaders = append(connectionHeaders, r.Header.Get("Connection"))

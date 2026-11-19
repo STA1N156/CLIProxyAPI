@@ -241,7 +241,7 @@ func RenderAgent(r AgentRequest) ([]byte, error) {
 	w.ObjEnd()
 	w.Key("model").Str(r.Model.ID)
 	w.Key("userAgent").Str("antigravity")
-	w.Key("requestType").Str("agent")
+	w.Key("requestType").Str("chat")
 	w.ObjEnd()
 	return w.Bytes(), nil
 }

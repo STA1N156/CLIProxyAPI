@@ -35,7 +35,7 @@ func checkAntigravityWireSignatureRebuild(t *testing.T, model string) {
 		}
 		if strings.HasSuffix(r.URL.Path, ":streamGenerateContent") {
 			raw, _ := io.ReadAll(r.Body)
-			if gjson.GetBytes(raw, "requestType").String() == "agent" {
+			if gjson.GetBytes(raw, "requestType").String() == "chat" {
 				upstream <- raw
 			}
 			_, _ = io.WriteString(w, "data: "+`{"response":{"candidates":[{"content":{"parts":[{"text":"OK","thoughtSignature":"NEW_SIGNATURE"}]},"finishReason":"STOP"}]}}`+"\n\n")

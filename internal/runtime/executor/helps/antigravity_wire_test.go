@@ -25,7 +25,7 @@ func TestAntigravityWireConversation(t *testing.T) {
 		}
 		if strings.HasSuffix(req.URL.Path, ":streamGenerateContent") {
 			raw, _ := io.ReadAll(req.Body)
-			if gjson.GetBytes(raw, "requestType").String() == "agent" {
+			if gjson.GetBytes(raw, "requestType").String() == "chat" {
 				mu.Lock()
 				generation = append(generation, raw)
 				n := len(generation)
