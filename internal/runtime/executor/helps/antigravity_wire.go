@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/agywire/agent"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
 )
 
@@ -233,6 +234,10 @@ func (t *AntigravityWireTransport) RoundTrip(req *http.Request) (*http.Response,
 	}
 	if first.err != nil {
 		cancel()
+		var configError *agent.ConfigurationError
+		if errors.As(first.err, &configError) {
+			return nil, cliproxyauth.NewRequestScopedError(configError.Error(), http.StatusNotImplemented)
+		}
 		if errors.Is(first.err, context.Canceled) || errors.Is(first.err, context.DeadlineExceeded) {
 			return nil, first.err
 		}

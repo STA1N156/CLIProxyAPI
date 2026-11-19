@@ -2,18 +2,43 @@ package helps
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
 )
 
 type wireTestTransport func(*http.Request) (*http.Response, error)
 
 func (f wireTestTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestAntigravityWireConfigurationErrorIsRequestScoped(t *testing.T) {
+	base := wireTestTransport(func(req *http.Request) (*http.Response, error) {
+		body := `{}`
+		if strings.HasSuffix(req.URL.Path, ":fetchAvailableModels") {
+			body = `{"models":{"gemini-4-hydrogen-low":{"model":"MODEL_TEST","modelExperimentIds":["monitors"]}},"sharedModelExperiments":{"monitors":{"experiments":{"allow-experimental-monitors":{"boolValue":true},"default-sonar-monitors-config":{"stringValue":"monitors {"}}}}}`
+		}
+		if strings.HasSuffix(req.URL.Path, ":streamGenerateContent") {
+			t.Error("invalid configuration reached generation")
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})
+	transport := &AntigravityWireTransport{Base: base, Account: t.Name(), StateDir: t.TempDir(), Token: func() (string, error) { return "test-token", nil }}
+	defer CloseAntigravityWire()
+	payload := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}}`)
+	req, _ := http.NewRequest(http.MethodPost, "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent", bytes.NewReader(payload))
+	req = BindAntigravityWireRequest(req, payload, "gemini-4-hydrogen-low", "test-conversation")
+	_, err := (&http.Client{Transport: transport}).Do(req)
+	var scoped *cliproxyauth.Error
+	if !errors.As(err, &scoped) || !scoped.IsRequestScoped() || scoped.StatusCode() != http.StatusNotImplemented {
+		t.Fatalf("expected request-scoped configuration error, got %v", err)
+	}
+}
 
 func TestAntigravityWireConversation(t *testing.T) {
 	var mu sync.Mutex
