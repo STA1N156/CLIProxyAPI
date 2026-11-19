@@ -10,6 +10,32 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+func TestFileTokenStoreListSkipsAntigravityWireDirectory(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{
+		"account.json", "group/account.json", ".antigravity-wire.json",
+		".antigravity-wire/account/home/conversations/session.json",
+		"group/.antigravity-wire/session.json",
+	} {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(`{"type":"codex","access_token":"test-token"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := NewFileTokenStore()
+	store.SetBaseDir(dir)
+	auths, err := store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(auths) != 3 {
+		t.Fatalf("loaded %d auth files, want 3 outside the runtime directories", len(auths))
+	}
+}
+
 func TestExtractAccessToken(t *testing.T) {
 	t.Parallel()
 
