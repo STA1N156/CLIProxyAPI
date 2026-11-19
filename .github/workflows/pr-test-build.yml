@@ -17,10 +17,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Set up Antigravity Go
+        run: bash .github/scripts/setup-antigravity-go.sh
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Build
         run: |
-          TLS_OVERLAY="$(go run ./cmd/antigravity_tls_overlay)"
-          go build -overlay="$TLS_OVERLAY" -o test-output ./cmd/server
+          go build -o test-output ./cmd/server
           rm -f test-output

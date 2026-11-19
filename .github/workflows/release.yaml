@@ -131,6 +131,9 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Set up Antigravity Go
+        shell: bash
+        run: bash .github/scripts/setup-antigravity-go.sh
       - name: Refresh models catalog
         shell: bash
         run: bash .github/scripts/refresh-model-catalogs.sh
@@ -173,8 +176,7 @@ jobs:
           rm -rf "dist/${TARGET}"
           mkdir -p "$archive_dir"
 
-          TLS_OVERLAY="$(GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" go run ./cmd/antigravity_tls_overlay)"
-          CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" go build -overlay="$TLS_OVERLAY" \
+          CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" go build \
             -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
             -o "$archive_dir/$binary_name" ./cmd/server/
 
@@ -259,6 +261,9 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Set up Antigravity Go
+        shell: bash
+        run: bash .github/scripts/setup-antigravity-go.sh
       - name: Refresh models catalog
         shell: bash
         run: bash .github/scripts/refresh-model-catalogs.sh
@@ -302,9 +307,9 @@ jobs:
               rm -rf /usr/local/go
               tar -C /usr/local -xzf "/tmp/${go_archive}"
               export PATH="/usr/local/go/bin:${PATH}"
+              source .github/scripts/setup-antigravity-go.sh
 
-              TLS_OVERLAY="$(GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" go run ./cmd/antigravity_tls_overlay)"
-              CGO_ENABLED=1 GOOS=linux GOARCH="${GOARCH}" go build -overlay="$TLS_OVERLAY" -buildvcs=false \
+              CGO_ENABLED=1 GOOS=linux GOARCH="${GOARCH}" go build -buildvcs=false \
                 -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
                 -o "'"$archive_dir"'/cli-proxy-api" ./cmd/server/
 
@@ -392,6 +397,9 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Set up Antigravity Go
+        shell: bash
+        run: bash .github/scripts/setup-antigravity-go.sh
       - name: Refresh models catalog
         shell: bash
         run: bash .github/scripts/refresh-model-catalogs.sh
@@ -428,8 +436,7 @@ jobs:
           rm -rf "dist/${TARGET}"
           mkdir -p "$archive_dir"
 
-          TLS_OVERLAY="$(GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" go run ./cmd/antigravity_tls_overlay)"
-          CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -overlay="$TLS_OVERLAY" -buildvcs=false \
+          CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -buildvcs=false \
             -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
             -o "$archive_dir/cli-proxy-api" ./cmd/server/
 
@@ -521,6 +528,9 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Set up Antigravity Go
+        shell: bash
+        run: bash .github/scripts/setup-antigravity-go.sh
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Fetch tags
@@ -579,8 +589,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "dist/${TARGET}/bin"
-          TLS_OVERLAY="$(GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" go run ./cmd/antigravity_tls_overlay)"
-          CGO_ENABLED=0 GOOS=freebsd GOARCH="$TARGET_GOARCH" go build -overlay="$TLS_OVERLAY" -buildvcs=false \
+          CGO_ENABLED=0 GOOS=freebsd GOARCH="$TARGET_GOARCH" go build -buildvcs=false \
             -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
             -o "dist/${TARGET}/bin/cli-proxy-api" ./cmd/server/
       - name: Package FreeBSD archive

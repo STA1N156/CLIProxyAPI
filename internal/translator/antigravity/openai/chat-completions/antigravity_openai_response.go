@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	wiresig "github.com/router-for-me/CLIProxyAPI/v7/internal/agywire/signature"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -133,6 +134,9 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 			}
 
 			hasThoughtSignature := thoughtSignatureResult.Exists() && thoughtSignatureResult.String() != ""
+			if strings.HasPrefix(thoughtSignatureResult.String(), wiresig.Prefix) {
+				template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_signature", thoughtSignatureResult.String())
+			}
 			hasContentPayload := partTextResult.Exists() || functionCallResult.Exists() || inlineDataResult.Exists()
 
 			// Ignore encrypted thoughtSignature but keep any actual content in the same part.
@@ -167,6 +171,9 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 					fcID = fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixNano(), atomic.AddUint64(&functionCallIDCounter, 1))
 				}
 				functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "id", fcID)
+				if strings.HasPrefix(thoughtSignatureResult.String(), wiresig.Prefix) {
+					functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "extra_content.google.thought_signature", thoughtSignatureResult.String())
+				}
 				functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "index", functionCallIndex)
 				functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.name", fcName)
 				if fcArgsResult := functionCallResult.Get("args"); fcArgsResult.Exists() {
@@ -242,7 +249,23 @@ func ConvertAntigravityResponseToOpenAINonStream(ctx context.Context, modelName 
 	responseResult := gjson.GetBytes(rawJSON, "response")
 	if responseResult.Exists() {
 		responseJSON := restoreAntigravityOpenAIFunctionNames([]byte(responseResult.Raw), originalRequestRawJSON)
-		return ConvertGeminiResponseToOpenAINonStream(ctx, modelName, originalRequestRawJSON, requestRawJSON, responseJSON, param)
+		converted := ConvertGeminiResponseToOpenAINonStream(ctx, modelName, originalRequestRawJSON, requestRawJSON, responseJSON, param)
+		for index, candidate := range responseResult.Get("candidates").Array() {
+			toolIndex := 0
+			for _, part := range candidate.Get("content.parts").Array() {
+				sig := part.Get("thoughtSignature").String()
+				if strings.HasPrefix(sig, wiresig.Prefix) {
+					converted, _ = sjson.SetBytes(converted, fmt.Sprintf("choices.%d.message.reasoning_signature", index), sig)
+					if part.Get("functionCall").Exists() {
+						converted, _ = sjson.SetBytes(converted, fmt.Sprintf("choices.%d.message.tool_calls.%d.extra_content.google.thought_signature", index, toolIndex), sig)
+					}
+				}
+				if part.Get("functionCall").Exists() {
+					toolIndex++
+				}
+			}
+		}
+		return converted
 	}
 	return []byte{}
 }

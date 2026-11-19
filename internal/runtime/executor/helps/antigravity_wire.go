@@ -54,6 +54,7 @@ type AntigravityWireTransport struct {
 	Base                       http.RoundTripper
 	Account, StateDir, BaseURL string
 	Token                      func() (string, error)
+	SignatureKey               [32]byte
 	Record                     func(*http.Request, []byte)
 }
 
@@ -208,7 +209,7 @@ func (t *AntigravityWireTransport) RoundTrip(req *http.Request) (*http.Response,
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-		})
+		}, t.SignatureKey)
 		select {
 		case events <- wireEvent{err: err}:
 		case <-ctx.Done():

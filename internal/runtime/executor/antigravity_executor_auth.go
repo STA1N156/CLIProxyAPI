@@ -11,12 +11,20 @@ import (
 	"strings"
 	"time"
 
+	wiresig "github.com/router-for-me/CLIProxyAPI/v7/internal/agywire/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
+
+func antigravityWireSignatureKey(auth *cliproxyauth.Auth) [32]byte {
+	if auth == nil {
+		return wiresig.Key("")
+	}
+	return wiresig.Key(metaStringValue(auth.Metadata, "refresh_token"))
+}
 
 // Refresh refreshes the authentication credentials using the refresh token.
 func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {

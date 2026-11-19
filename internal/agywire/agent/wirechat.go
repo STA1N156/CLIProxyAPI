@@ -16,6 +16,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/agywire/ids"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/agywire/schema"
+	wiresig "github.com/router-for-me/CLIProxyAPI/v7/internal/agywire/signature"
 )
 
 type wireContentItem struct {
@@ -37,10 +38,7 @@ type wireResult struct {
 	IsError bool              `json:"isError"`
 }
 
-type wireCallMeta struct {
-	Summary string `json:"s,omitempty"`
-	GemID   string `json:"g,omitempty"`
-}
+type wireCallMeta = wiresig.CallMeta
 
 type wireTurn struct {
 	Kind      string                  `json:"kind"`
@@ -564,6 +562,7 @@ func flattenTurns(turns []wireTurn) string {
 func (d *Daemon) wireLoop(ctx context.Context, cv *wireConv, p *wireChatParams, model ModelInfo) (map[string]any, error) {
 	var usage turnUsage
 	system := RenderSystemPrompt(d.home, cv.Cwd, cv.Cascade, cv.MCPServer, cv.Tools, cv.AppendText, model.Guidelines)
+	mapper := newBuiltinMapper(p.Tools, p.Cwd)
 	denied := 0
 	for {
 		if ctx.Err() != nil {
@@ -619,7 +618,7 @@ func (d *Daemon) wireLoop(ctx context.Context, cv *wireConv, p *wireChatParams, 
 			if !d.wireInternal(fc) {
 				allInternal = false
 				if prefix == "" || !strings.HasPrefix(fc.Name, prefix) {
-					if _, _, ok := mapBuiltin(fc, p.Tools); !ok {
+					if _, _, ok := mapper.translate(fc); !ok {
 						denyTools = true
 					}
 				}
@@ -681,7 +680,7 @@ func (d *Daemon) wireLoop(ctx context.Context, cv *wireConv, p *wireChatParams, 
 			}
 			input := stripToolSummary(fc.Args)
 			if builtin {
-				if n, a, ok := mapBuiltin(fc, p.Tools); ok {
+				if n, a, ok := mapper.translate(fc); ok {
 					name, input, builtin = n, a, false
 				}
 			}

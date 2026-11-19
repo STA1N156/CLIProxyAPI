@@ -220,7 +220,7 @@ func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cli
 	if cfg != nil && cfg.AuthDir != "" {
 		stateDir = filepath.Join(cfg.AuthDir, ".antigravity-wire")
 	}
-	wireTransport := &helps.AntigravityWireTransport{Base: base, Account: antigravityTransportScope(auth) + "|" + antigravityProxyURL(cfg, auth), StateDir: stateDir, BaseURL: buildBaseURL(auth), Token: func() (string, error) {
+	wireTransport := &helps.AntigravityWireTransport{Base: base, Account: antigravityTransportScope(auth) + "|" + antigravityProxyURL(cfg, auth), StateDir: stateDir, BaseURL: buildBaseURL(auth), SignatureKey: antigravityWireSignatureKey(auth), Token: func() (string, error) {
 		current := auth
 		if manager := antigravityClientManager.Load(); manager != nil && auth != nil {
 			if latest, ok := manager.GetByID(auth.ID); ok {

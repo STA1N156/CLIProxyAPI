@@ -15,6 +15,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/agywire/ids"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/agywire/schema"
+	wiresig "github.com/router-for-me/CLIProxyAPI/v7/internal/agywire/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 )
 
@@ -58,8 +59,13 @@ func NewEmbedded(ctx context.Context, home string, client *http.Client, token fu
 
 func (e *Embedded) Close() { e.cancel() }
 
-func (e *Embedded) Stream(ctx context.Context, payload []byte, model, conversation string, emit func([]byte) error) error {
-	p, err := wireInput(payload, model, conversation, e.d.home)
+func (e *Embedded) Stream(ctx context.Context, payload []byte, model, conversation string, emit func([]byte) error, keys ...[32]byte) error {
+	var key [32]byte
+	if len(keys) > 0 {
+		key = keys[0]
+	}
+	ctx, payload = wiresig.Prepare(ctx, payload, key)
+	p, err := wireInput(payload, model, conversation, e.d.home, wiresig.Restored(ctx)...)
 	if err != nil {
 		return err
 	}
@@ -118,6 +124,10 @@ func (e *Embedded) Stream(ctx context.Context, payload []byte, model, conversati
 	out := result.(map[string]any)
 	var parts []any
 	signature, _ := out["signature"].(string)
+	meta, _ := out["callMeta"].(map[string]wireCallMeta)
+	if signature != "" || len(meta) > 0 {
+		signature = wiresig.Wrap(key, wiresig.Payload{Signature: signature, Calls: meta})
+	}
 	if calls, ok := out["toolCalls"].([]wireToolCallOut); ok {
 		for i, call := range calls {
 			if original := p.originalNames[call.Name]; original != "" {
@@ -148,7 +158,7 @@ func (e *Embedded) Stream(ctx context.Context, payload []byte, model, conversati
 	return emitErr
 }
 
-func wireInput(payload []byte, model, conversation, home string) (*wireChatParams, error) {
+func wireInput(payload []byte, model, conversation, home string, restored ...wiresig.History) (*wireChatParams, error) {
 	var outer map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &outer); err != nil {
 		return nil, err
@@ -214,6 +224,7 @@ func wireInput(payload []byte, model, conversation, home string) (*wireChatParam
 	sum := sha256.Sum256(toolRaw)
 	p.ToolsFP = hex.EncodeToString(sum[:])
 	firstUser := true
+	usedHistory := make([]bool, len(restored))
 	for _, content := range input.Contents {
 		t := wireTurn{Kind: "user"}
 		if content.Role == "model" || content.Role == "assistant" {
@@ -273,6 +284,34 @@ func wireInput(payload []byte, model, conversation, home string) (*wireChatParam
 		}
 		t.Text = strings.Join(texts, "")
 		t.Thinking = strings.Join(thoughts, "")
+		if t.Kind == "assistant" {
+			for index, history := range restored {
+				if usedHistory[index] {
+					continue
+				}
+				matched := history.Signature != "" && t.Signature == history.Signature || history.Thinking != "" && t.Thinking == history.Thinking || history.Text != "" && t.Text == history.Text
+				for _, call := range t.ToolUses {
+					if _, ok := history.Calls[call.ID]; ok {
+						matched = true
+						break
+					}
+				}
+				if matched {
+					usedHistory[index] = true
+					t.Signature = history.Signature
+					if t.Thinking == "" {
+						t.Thinking = history.Thinking
+					}
+					if t.CallMeta == nil {
+						t.CallMeta = map[string]wireCallMeta{}
+					}
+					for id, meta := range history.Calls {
+						t.CallMeta[id] = meta
+					}
+					break
+				}
+			}
+		}
 		if t.Kind == "user" && strings.TrimSpace(t.Text) == "" {
 			t.Text = "(empty)"
 			if len(t.Images) > 0 {
@@ -295,6 +334,14 @@ func wireInput(payload []byte, model, conversation, home string) (*wireChatParam
 			prior.Images = append(prior.Images, t.Images...)
 			prior.Results = append(prior.Results, t.Results...)
 			prior.ToolUses = append(prior.ToolUses, t.ToolUses...)
+			if len(t.CallMeta) > 0 {
+				if prior.CallMeta == nil {
+					prior.CallMeta = map[string]wireCallMeta{}
+				}
+				for id, meta := range t.CallMeta {
+					prior.CallMeta[id] = meta
+				}
+			}
 			if t.Signature != "" {
 				prior.Signature = t.Signature
 			}
