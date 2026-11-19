@@ -1,9 +1,11 @@
 package executor
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
+	antigravitychat "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/antigravity/openai/chat-completions"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/tidwall/gjson"
 )
@@ -146,6 +148,8 @@ func TestSanitizeAntigravityRequestSchemasCleansResultSchemas(t *testing.T) {
 func TestAntigravitySchemaPathsCoverEverySchemaLocation(t *testing.T) {
 	const schema = `{"type":"object","$id":"drop","properties":{"a":{"type":"string"}}}`
 
+	// Both spellings of the declarations container are exercised: the Gemini translator forwards
+	// snake_case untouched, so covering only camelCase leaves those requests uncleaned.
 	for _, declContainer := range []string{"functionDeclarations", "function_declarations"} {
 		for _, genContainer := range antigravityGenerationConfigContainers {
 			t.Run(declContainer+"_"+strings.TrimPrefix(genContainer, "request."), func(t *testing.T) {
@@ -181,7 +185,8 @@ func TestAntigravitySchemaPathsCoverEverySchemaLocation(t *testing.T) {
 				}
 				base := "request.tools.0." + declContainer + ".0."
 				for _, k := range antigravityDeclarationSchemaKeys {
-
+					// Only the camelCase alias is renamed onto parameters, matching whole-payload
+					// cleaning. Every other spelling is cleaned where the client put it.
 					if k == "parametersJsonSchema" {
 						if gjson.Get(got, base+k).Exists() {
 							t.Errorf("%s should have been renamed onto parameters: %s", k, got)
@@ -227,6 +232,7 @@ func TestSanitizeAntigravityRequestSchemasMatchesWholePayloadCleaning(t *testing
 		}
 	}
 
+	// Explicitly pin the placeholder, so the equivalence above cannot pass by both sides dropping it.
 	doc := `{"request":{"tools":[{"functionDeclarations":[{"name":"t","parameters":` + shapes["optionalOnly"] + `}]}]}}`
 	got := gjson.Get(sanitizeAntigravityRequestSchemas(doc, true), schemaPath)
 	if req := got.Get("required").Array(); len(req) != 1 || req[0].String() != "_" {
@@ -332,6 +338,91 @@ func TestSanitizeAntigravityToolSchemasKeepNativeTypeAndNullableOnBothPaths(t *t
 	}
 }
 
+func TestAntigravityBuildRequestKeepsJSONObjectMimeOnly(t *testing.T) {
+	input := []byte(`{"model":"gemini-3.1-pro-low","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_object"}}`)
+	translated := antigravitychat.ConvertOpenAIRequestToAntigravity("gemini-3.1-pro-low", input, false)
+	body := buildRequestBodyFromRawPayload(t, "gemini-3.1-pro-low", translated)
+	encoded, errMarshal := json.Marshal(body)
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+
+	generationConfig := gjson.GetBytes(encoded, "request.generationConfig")
+	if got := generationConfig.Get("responseMimeType").String(); got != "application/json" {
+		t.Fatalf("responseMimeType = %q, want application/json: %s", got, encoded)
+	}
+	if generationConfig.Get("responseSchema").Exists() {
+		t.Fatalf("responseSchema should not be set for json_object: %s", encoded)
+	}
+}
+
+func TestAntigravityBuildRequestPreservesGenerationResponseSchemaMetadata(t *testing.T) {
+	payload := []byte(`{"request":{"generationConfig":{"responseSchema":{
+		"type":"object",
+		"nullable":true,
+		"properties":{"_":{"type":"string","nullable":true}},
+		"required":["_"]
+	}}}}`)
+
+	for _, modelName := range []string{"gemini-3.6-flash-high", "gemini-3.1-pro-low"} {
+		t.Run(modelName, func(t *testing.T) {
+			body := buildRequestBodyFromRawPayload(t, modelName, payload)
+			encoded, errMarshal := json.Marshal(body)
+			if errMarshal != nil {
+				t.Fatal(errMarshal)
+			}
+
+			schema := gjson.GetBytes(encoded, "request.generationConfig.responseSchema")
+			if !schema.Get("nullable").Bool() || !schema.Get("properties._.nullable").Bool() {
+				t.Fatalf("response schema nullable metadata was removed: %s", schema.Raw)
+			}
+			if !schema.Get("properties._").Exists() {
+				t.Fatalf("legitimate underscore property was removed: %s", schema.Raw)
+			}
+			if required := schema.Get("required.0").String(); required != "_" {
+				t.Fatalf("required[0] = %q, want underscore: %s", required, schema.Raw)
+			}
+		})
+	}
+}
+
+func TestAntigravityBuildRequestSanitizesSnakeCaseGenerationResponseSchemas(t *testing.T) {
+	for _, testCase := range []struct {
+		alias     string
+		canonical string
+	}{
+		{alias: "response_schema", canonical: "responseSchema"},
+		{alias: "response_json_schema", canonical: "responseJsonSchema"},
+	} {
+		t.Run(testCase.alias, func(t *testing.T) {
+			input := []byte(`{"model":"gemini-3.6-flash-high","messages":[{"role":"user","content":"hi"}],"generation_config":{"` + testCase.alias + `":{"type":"object","$id":"drop-me","properties":{"title":{"type":"string"}}}}}`)
+			translated := antigravitychat.ConvertOpenAIRequestToAntigravity("gemini-3.6-flash-high", input, false)
+			body := buildRequestBodyFromRawPayload(t, "gemini-3.6-flash-high", translated)
+			encoded, errMarshal := json.Marshal(body)
+			if errMarshal != nil {
+				t.Fatal(errMarshal)
+			}
+
+			base := "request.generationConfig."
+			// The upstream API accepts either spelling, so the field must stay where the client put
+			// it. Only the unsupported keywords inside it are what upstream rejects.
+			schema := gjson.GetBytes(encoded, base+testCase.alias)
+			if !schema.Exists() {
+				t.Fatalf("snake_case response schema was renamed or dropped: %s", encoded)
+			}
+			if gjson.GetBytes(encoded, base+testCase.canonical).Exists() {
+				t.Fatalf("cleaning must not add a second spelling: %s", encoded)
+			}
+			if schema.Get(`\$id`).Exists() {
+				t.Fatalf("unsupported $id survived cleaning: %s", schema.Raw)
+			}
+			if !schema.Get("properties.title").Exists() {
+				t.Fatalf("schema property named title was removed: %s", schema.Raw)
+			}
+		})
+	}
+}
+
 // TestSanitizeAntigravityRequestSchemasCleansBothSpellingsInPlace covers a payload carrying both
 // spellings: each is cleaned where it sits, and neither is silently dropped.
 func TestSanitizeAntigravityRequestSchemasCleansBothSpellingsInPlace(t *testing.T) {
@@ -362,7 +453,10 @@ func TestSanitizeAntigravityRequestSchemasCleansBothSpellingsInPlace(t *testing.
 // TestSanitizeAntigravityRequestSchemasIsIdempotent guards the hint duplication seen in
 // production, where a schema cleaned by a translator was cleaned again by this executor.
 func TestSanitizeAntigravityRequestSchemasIsIdempotent(t *testing.T) {
-
+	// "withDesc" already has a description, so the hint is parenthesised; "bare" has none, so the
+	// hint is stored on its own. Both spellings must survive a second cleaning pass unchanged.
+	// "compound" has no description and two hints, so the first pass stores the enum hint bare and
+	// appends the constraint after it — the second pass must recognise that leading bare form.
 	payload := `{"request": {"tools": [{"functionDeclarations": [{
 	  "name": "manage_todo_list",
 	  "parameters": {"type": "object", "properties": {
@@ -390,10 +484,10 @@ func TestSanitizeAntigravityRequestSchemasIsIdempotent(t *testing.T) {
 // propertyNamesShapes are the two nestings reported against the private Gemini backend, which
 // rejects the standard JSON Schema keyword "propertyNames" with an unknown-field 400.
 var propertyNamesShapes = map[string]string{
-
+	// An object nested in an array item.
 	"arrayItem": `{"type":"object","properties":{"records":{"type":"array","items":{"type":"object",` +
 		`"properties":{"name":{"type":"string"}},"propertyNames":{"type":"string"}}}}}`,
-
+	// A dynamic map declared by a property that is itself named "properties".
 	"propertyNamedProperties": `{"type":"object","properties":{"properties":{"type":"object",` +
 		`"propertyNames":{"type":"string"}}}}`,
 }
@@ -463,6 +557,38 @@ func TestSanitizeAntigravityRequestSchemasKeepsPropertyNamesInHistory(t *testing
 		}
 		if schema.Get("properties.properties.propertyNames").Exists() {
 			t.Errorf("antigravity=%v: propertyNames keyword survived inside a property named properties: %s", useAntigravitySchema, schema.Raw)
+		}
+	}
+}
+
+// TestAntigravityBuildRequestStripsPropertyNamesFromOutboundBody asserts on the body that actually
+// leaves the executor, so a later transformation cannot reintroduce the keyword unnoticed.
+func TestAntigravityBuildRequestStripsPropertyNamesFromOutboundBody(t *testing.T) {
+	for shapeName, schema := range propertyNamesShapes {
+		for _, modelName := range []string{"gemini-3.1-pro", "claude-opus-4-6"} {
+			t.Run(shapeName+"_"+modelName, func(t *testing.T) {
+				payload := []byte(`{"request":{
+					"contents":[{"role":"model","parts":[{"functionCall":{"name":"t","args":{"propertyNames":"keep-me"}}}]},{"role":"user","parts":[{"text":"continue"}]}],
+					"tools":[{"function_declarations":[{"name":"t","parametersJsonSchema":` + schema + `}]}],
+					"generationConfig":{"responseSchema":` + schema + `}
+				}}`)
+
+				body := buildRequestBodyFromRawPayload(t, modelName, payload)
+				encoded, errMarshal := json.Marshal(body)
+				if errMarshal != nil {
+					t.Fatal(errMarshal)
+				}
+
+				for _, path := range []string{"request.tools", "request.generationConfig"} {
+					if node := gjson.GetBytes(encoded, path); strings.Contains(node.Raw, `"propertyNames"`) {
+						t.Errorf("%s still carries propertyNames: %s", path, node.Raw)
+					}
+				}
+				args := gjson.GetBytes(encoded, "request.contents.0.parts.0.functionCall.args")
+				if args.Get("propertyNames").String() != "keep-me" {
+					t.Errorf("functionCall argument named propertyNames was rewritten: %s", args.Raw)
+				}
+			})
 		}
 	}
 }

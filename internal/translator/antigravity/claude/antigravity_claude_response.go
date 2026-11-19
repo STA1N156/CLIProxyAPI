@@ -15,7 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	wiresig "github.com/router-for-me/CLIProxyAPI/v7/internal/agywire/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
@@ -44,9 +43,6 @@ func decodeSignature(signature string) string {
 }
 
 func formatGeminiClaudeCarrierValue(modelName, signature, direction, targetKind string) string {
-	if strings.HasPrefix(signature, wiresig.Prefix) {
-		return signature
-	}
 	if sigcompat.SignatureProviderFromModelName(modelName) == sigcompat.SignatureProviderGemini {
 		return encodeGeminiClaudeCarrierSignature(signature, direction, targetKind)
 	}
@@ -54,9 +50,6 @@ func formatGeminiClaudeCarrierValue(modelName, signature, direction, targetKind 
 }
 
 func formatClaudeSignatureValue(modelName, signature string) string {
-	if strings.HasPrefix(signature, wiresig.Prefix) {
-		return signature
-	}
 	// Gemini signatures are provider-native replay state. Keep them raw so an
 	// empty detached thinking block or tool_use block can round-trip through
 	// Claude Code and be recognized by the Gemini request translator.
@@ -109,9 +102,6 @@ type Params struct {
 var toolUseIDCounter uint64
 
 func antigravityClaudeToolUseID(modelName string, functionCall gjson.Result, fallback string) string {
-	if id := functionCall.Get("id").String(); strings.HasPrefix(id, "toolu_") {
-		return id
-	}
 	if sigcompat.SignatureProviderFromModelName(modelName) == sigcompat.SignatureProviderGemini {
 		if stableID := util.GeminiClaudeToolUseID(functionCall.Get("id").String(), functionCall.Get("name").String(), functionCall.Get("args").Raw); stableID != "" {
 			return stableID
@@ -363,7 +353,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 				}
 			} else if functionCallResult.Exists() {
 				toolSignature := thoughtSignatureResult.String()
-				if cache.GetModelGroup(modelName) != "claude" || strings.HasPrefix(toolSignature, wiresig.Prefix) {
+				if cache.GetModelGroup(modelName) != "claude" {
 					appendPartSignature(toolSignature, geminiClaudeCarrierNext, geminiClaudeCarrierFunction)
 				}
 				// Handle function/tool calls from the AI model
@@ -658,7 +648,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 
 				name := util.RestoreSanitizedToolName(toolNameMap, functionCall.Get("name").String())
 				toolIDCounter++
-				if (!isClaudeTarget || strings.HasPrefix(signature, wiresig.Prefix)) && signature != "" && !signatureAttachedToThought {
+				if !isClaudeTarget && signature != "" && !signatureAttachedToThought {
 					appendSignatureCarrier(signature, geminiClaudeCarrierNext, geminiClaudeCarrierFunction)
 				}
 				toolBlock := []byte(`{"type":"tool_use","id":"","name":"","input":{}}`)

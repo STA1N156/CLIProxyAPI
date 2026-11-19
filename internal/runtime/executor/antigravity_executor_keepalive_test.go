@@ -12,11 +12,9 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 // TestAntigravityBuildRequestKeepsConnectionAlive guards the regression where the
@@ -41,8 +39,8 @@ func TestAntigravityBuildRequestKeepsConnectionAlive(t *testing.T) {
 			if req.Close {
 				t.Fatal("Antigravity upstream request must not force Connection: close")
 			}
-			if v := req.Header.Get("Connection"); v != "" {
-				t.Fatalf("Antigravity must use implicit HTTP/1.1 keep-alive, got %q", v)
+			if v := req.Header.Get("Connection"); v != "keep-alive" {
+				t.Fatalf("Antigravity upstream request must send keep-alive, got %q", v)
 			}
 		})
 	}
@@ -52,34 +50,20 @@ func TestAntigravityBuildRequestKeepsConnectionAlive(t *testing.T) {
 // against a local upstream and proves that repeated streaming requests share a
 // single pooled TCP connection and never advertise Connection: close.
 func TestAntigravityExecuteStreamReusesUpstreamConnection(t *testing.T) {
-	defer helps.CloseAntigravityWire()
 	var mu sync.Mutex
 	remotes := map[string]int{}
 	var connectionHeaders []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ":fetchAvailableModels") {
-			_, _ = w.Write([]byte(`{"models":{"gemini-3.6-flash-high":{"model":"MODEL_PLACEHOLDER_TEST","maxTokens":1000000,"maxOutputTokens":4096,"thinkingLevel":3}}}`))
-			return
-		}
-		if !strings.HasSuffix(r.URL.Path, ":streamGenerateContent") {
-			_, _ = w.Write([]byte(`{}`))
-			return
-		}
-		raw, _ := io.ReadAll(r.Body)
-		if gjson.GetBytes(raw, "requestType").String() == "chat" {
-			mu.Lock()
-			remotes[r.RemoteAddr]++
-			connectionHeaders = append(connectionHeaders, r.Header.Get("Connection"))
-			mu.Unlock()
-		}
+		mu.Lock()
+		remotes[r.RemoteAddr]++
+		connectionHeaders = append(connectionHeaders, r.Header.Get("Connection"))
+		mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}}\n\n"))
 	}))
 	defer server.Close()
 
-	cfg := &config.Config{RequestRetry: 1}
-	cfg.AuthDir = t.TempDir()
-	exec := NewAntigravityExecutor(cfg)
+	exec := NewAntigravityExecutor(&config.Config{RequestRetry: 1})
 	auth := &cliproxyauth.Auth{
 		ID:         "antigravity-keepalive-auth",
 		Provider:   "antigravity",
@@ -130,14 +114,14 @@ func TestAntigravityExecuteStreamReusesUpstreamConnection(t *testing.T) {
 			t.Fatalf("upstream request %d advertised Connection: %q", i, h)
 		}
 	}
-	if distinct >= requests {
-		t.Fatalf("expected %d requests to reuse pooled connections, got %d connections", requests, distinct)
+	if distinct != 1 {
+		t.Fatalf("expected %d streaming requests to reuse one upstream connection, got %d connections", requests, distinct)
 	}
 }
 
 // TestAntigravityCountTokensReusesUpstreamConnection covers the second upstream
 // request builder, which shares the same connection pool.
-func TestAntigravityCountTokensRunsLocally(t *testing.T) {
+func TestAntigravityCountTokensReusesUpstreamConnection(t *testing.T) {
 	var mu sync.Mutex
 	remotes := map[string]int{}
 	var connectionHeaders []string
@@ -187,8 +171,8 @@ func TestAntigravityCountTokensRunsLocally(t *testing.T) {
 			t.Fatalf("countTokens request %d advertised Connection: %q", i, h)
 		}
 	}
-	if distinct != 0 {
-		t.Fatalf("local token estimation made %d upstream connections", distinct)
+	if distinct != 1 {
+		t.Fatalf("expected %d countTokens requests to reuse one upstream connection, got %d connections", requests, distinct)
 	}
 }
 

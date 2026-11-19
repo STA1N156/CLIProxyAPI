@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	wiresig "github.com/router-for-me/CLIProxyAPI/v7/internal/agywire/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -53,7 +52,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
 	}
-	ctx, originalPayload := wiresig.Prepare(ctx, originalPayloadSource, antigravityWireSignatureKey(auth))
+	originalPayload := originalPayloadSource
 	originalPayload, errValidate := validateAntigravityRequestSignatures(ctx, baseModel, from, originalPayload)
 	if errValidate != nil {
 		return resp, errValidate
@@ -285,7 +284,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
 	}
-	ctx, originalPayload := wiresig.Prepare(ctx, originalPayloadSource, antigravityWireSignatureKey(auth))
+	originalPayload := originalPayloadSource
 	originalPayload, errValidate := validateAntigravityRequestSignatures(ctx, baseModel, from, originalPayload)
 	if errValidate != nil {
 		return resp, errValidate

@@ -4,15 +4,6 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential git && rm -rf /var/lib/apt/lists/*
 
-RUN git init /opt/agy-go && cd /opt/agy-go && \
-    git remote add origin https://github.com/golang/go.git && \
-    git fetch --depth=1 origin 298f53e483ef15096a05b1d3017cb9d4207cb327 && \
-    git checkout --detach FETCH_HEAD && cd src && GOROOT_BOOTSTRAP=/usr/local/go ./make.bash
-
-ENV GOROOT=/opt/agy-go
-ENV PATH=/opt/agy-go/bin:${PATH}
-ENV GOTOOLCHAIN=local
-
 COPY go.mod go.sum ./
 
 RUN go mod download
@@ -23,7 +14,7 @@ ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_DATE=unknown
 
-RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
+RUN TLS_OVERLAY="$(go run ./cmd/antigravity_tls_overlay)" && CGO_ENABLED=1 GOOS=linux go build -overlay="$TLS_OVERLAY" -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
 
 FROM debian:bookworm
 

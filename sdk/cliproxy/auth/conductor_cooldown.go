@@ -340,13 +340,6 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	if auth == nil || auth.Disabled || auth.Status == StatusDisabled || m.cooldownDisabledForAuth(auth) {
 		return false
 	}
-	// Old wire configuration errors were reported as model 404s and persisted as cooldowns.
-	if strings.EqualFold(auth.Provider, "antigravity") && record.LastError != nil && record.LastError.HTTPStatus == 404 {
-		message := record.LastError.Message
-		if strings.Contains(message, "unknown model:") && (strings.Contains(message, "目录里的安全监控配置未核对") || strings.Contains(message, "目录里的系统提示模板未核对")) {
-			return false
-		}
-	}
 	updatedAt := record.UpdatedAt
 	if updatedAt.IsZero() {
 		updatedAt = now

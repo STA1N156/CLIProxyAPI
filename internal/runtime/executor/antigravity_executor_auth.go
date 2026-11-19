@@ -11,20 +11,12 @@ import (
 	"strings"
 	"time"
 
-	wiresig "github.com/router-for-me/CLIProxyAPI/v7/internal/agywire/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
-
-func antigravityWireSignatureKey(auth *cliproxyauth.Auth) [32]byte {
-	if auth == nil {
-		return wiresig.Key("")
-	}
-	return wiresig.Key(metaStringValue(auth.Metadata, "refresh_token"))
-}
 
 // Refresh refreshes the authentication credentials using the refresh token.
 func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
@@ -42,8 +34,8 @@ func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Au
 }
 
 func (e *AntigravityExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
-	if auth == nil {
-		return false
+	if antigravityProjectIDFromAuth(auth) == "" {
+		return true
 	}
 	accessToken := metaStringValue(auth.Metadata, "access_token")
 	return accessToken == "" || !tokenExpiry(auth.Metadata).After(time.Now().Add(refreshSkew))
@@ -55,13 +47,28 @@ func (e *AntigravityExecutor) PrepareRequestAuth(ctx context.Context, auth *clip
 	}
 
 	updated := auth.Clone()
-	_, refreshedAuth, errToken := e.ensureAccessToken(ctx, updated)
+	token, refreshedAuth, errToken := e.ensureAccessToken(ctx, updated)
 	if errToken != nil {
 		return nil, errToken
 	}
 	if refreshedAuth != nil {
 		updated = refreshedAuth
 	}
+	if antigravityProjectIDFromAuth(updated) != "" {
+		return updated, nil
+	}
+
+	projectID, errProject := e.fetchAntigravityProjectID(ctx, updated, token)
+	if errProject != nil {
+		return nil, missingAntigravityProjectIDError(errProject)
+	}
+	if projectID == "" {
+		return nil, missingAntigravityProjectIDError(nil)
+	}
+	if updated.Metadata == nil {
+		updated.Metadata = make(map[string]any)
+	}
+	updated.Metadata["project_id"] = projectID
 	return updated, nil
 }
 

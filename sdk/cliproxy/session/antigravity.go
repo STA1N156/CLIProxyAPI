@@ -29,7 +29,7 @@ func hashAntigravityRoot(root canonicalRoot) string {
 		}
 		switch part.Kind {
 		case "text":
-			features = append(features, "text:"+util.StripAntigravityBillingHeader(part.Value))
+			features = append(features, "text:"+part.Value)
 		case "json":
 			value := gjson.Parse(part.Value)
 			call := value.Get("functionCall")
@@ -52,7 +52,7 @@ func hashAntigravityRoot(root canonicalRoot) string {
 	if len(features) > 0 {
 		messages = append(messages, strings.Join(features, "|"))
 	}
-	system := strings.TrimSpace(util.StripAntigravityBillingHeader(strings.Join(root.Instructions, "\n")))
+	system := strings.Join(root.Instructions, "\n")
 	if system == "" && len(messages) == 0 {
 		return ""
 	}
