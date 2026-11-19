@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const antigravityHubVersion = "2.28.0"
+const antigravityHubVersion = "2.31.0"
 
 // StartAntigravityVersionUpdater is retained for SDK compatibility. The Hub
 // version and build number are a fixed pair, so CLI manifests are not consulted.
@@ -16,7 +16,7 @@ func AntigravityLatestVersion() string { return antigravityHubVersion }
 
 // AntigravityUserAgent returns the pinned Hub identity.
 func AntigravityUserAgent() string {
-	return "antigravity/hub/2.28.0 (aidev_client; os_type=windows; arch=amd64; cl=1008300195)"
+	return "antigravity/hub/2.31.0 (aidev_client; os_type=windows; arch=amd64; cl=1022991777)"
 }
 
 func isAntigravityFamilyUserAgent(lower string) bool {

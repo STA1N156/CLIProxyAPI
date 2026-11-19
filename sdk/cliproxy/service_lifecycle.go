@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -198,6 +199,9 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	s.registerModelRefreshCallback()
+	if !homeEnabled {
+		executor.StartAntigravityPresence(ctx, s.cfg, s.coreManager)
+	}
 
 	// Prefer core auth manager auto refresh if available.
 	if s.coreManager != nil && !homeEnabled {

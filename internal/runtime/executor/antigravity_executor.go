@@ -73,7 +73,7 @@ func ensureAntigravityGeminiLeadingUserContent(modelName string, payload []byte)
 	return helps.EnsureGeminiLeadingUserContent(payload, "request.contents")
 }
 
-// Each Antigravity credential gets its own HTTP/1.1 connection pool. Sessions routed
+// Each Antigravity credential gets its own connection pool. Sessions routed
 // to the same auth reuse that pool, while different OAuth identities never share a
 // TCP/TLS connection, matching the native client's one-credential process model.
 // The cache is bounded so pools cannot accumulate when keys churn.
@@ -139,7 +139,7 @@ func antigravityHTTP11Transport(auth *cliproxyauth.Auth, base *http.Transport) *
 		return cloneTransportWithHTTP11(base), nil
 	})
 	if errGet != nil {
-		log.Debugf("antigravity executor: cache HTTP/1.1 transport failed: %v", errGet)
+		log.Debugf("antigravity executor: cache transport failed: %v", errGet)
 		return cloneTransportWithHTTP11(base)
 	}
 	return transport
@@ -174,6 +174,12 @@ func antigravityTransportScope(auth *cliproxyauth.Auth) string {
 	if auth == nil {
 		return antigravityAnonymousTransportScope
 	}
+	for _, key := range []string{"refresh_token", "email", "access_token", "token"} {
+		if value := metaStringValue(auth.Metadata, key); value != "" {
+			digest := sha256.Sum256([]byte(value))
+			return hex.EncodeToString(digest[:])
+		}
+	}
 	if id := strings.TrimSpace(auth.ID); id != "" {
 		return "id:" + id
 	}
@@ -185,18 +191,7 @@ func antigravityTransportScope(auth *cliproxyauth.Auth) string {
 			return "source:" + source
 		}
 	}
-	if refresh := strings.TrimSpace(metaStringValue(auth.Metadata, "refresh_token")); refresh != "" {
-		return antigravityCredentialScope("refresh:", refresh)
-	}
-	if access := strings.TrimSpace(metaStringValue(auth.Metadata, "access_token")); access != "" {
-		return antigravityCredentialScope("token:", access)
-	}
 	return antigravityAnonymousTransportScope
-}
-
-func antigravityCredentialScope(prefix, secret string) string {
-	digest := sha256.Sum256([]byte(secret))
-	return prefix + hex.EncodeToString(digest[:8])
 }
 
 func antigravityProxyURL(cfg *config.Config, auth *cliproxyauth.Auth) string {
@@ -212,8 +207,34 @@ func antigravityProxyURL(cfg *config.Config, auth *cliproxyauth.Auth) string {
 }
 
 // newAntigravityHTTPClient creates an HTTP client specifically for Antigravity,
-// enforcing the native CLI's HTTP/1.1 ALPN profile.
+// using the handoff client's TLS profile and auxiliary requests.
 func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
+	client := antigravityBaseHTTPClient(ctx, cfg, auth, timeout)
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	client.Transport = &helps.AntigravityClientTransport{Base: base, RefreshProject: func(refreshCtx context.Context, token string) (string, error) {
+		project, errProject := NewAntigravityExecutor(cfg).fetchAntigravityProjectID(refreshCtx, auth, token)
+		if errProject == nil && project != "" && auth != nil {
+			if manager := antigravityClientManager.Load(); manager != nil {
+				if updated, ok := manager.GetByID(auth.ID); ok {
+					if updated.Metadata == nil {
+						updated.Metadata = make(map[string]any)
+					}
+					updated.Metadata["project_id"] = project
+					if _, errUpdate := manager.Update(refreshCtx, updated); errUpdate != nil {
+						log.Debugf("antigravity: save refreshed project: %v", errUpdate)
+					}
+				}
+			}
+		}
+		return project, errProject
+	}}
+	return client
+}
+
+func antigravityBaseHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
 	if proxyURL := antigravityProxyURL(cfg, auth); proxyURL != "" {
 		if transport := antigravityProxiedHTTP11Transport(auth, proxyURL); transport != nil {
 			return &http.Client{Transport: transport, Timeout: timeout}

@@ -56,8 +56,8 @@ func TestNewAntigravityHTTPClientSharesTransport(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			first := newAntigravityHTTPClient(context.Background(), tc.cfg, tc.auth, 0)
-			second := newAntigravityHTTPClient(context.Background(), tc.cfg, tc.auth, 0)
+			first := antigravityBaseHTTPClient(context.Background(), tc.cfg, tc.auth, 0)
+			second := antigravityBaseHTTPClient(context.Background(), tc.cfg, tc.auth, 0)
 			if first.Transport == nil || second.Transport == nil {
 				t.Fatal("expected a transport to be configured")
 			}
@@ -68,17 +68,17 @@ func TestNewAntigravityHTTPClientSharesTransport(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected *http.Transport, got %T", first.Transport)
 			}
-			if transport.ForceAttemptHTTP2 {
-				t.Fatal("Antigravity transport must not attempt HTTP/2")
+			if !transport.ForceAttemptHTTP2 {
+				t.Fatal("Antigravity transport must negotiate HTTP/2")
 			}
-			if len(transport.TLSNextProto) != 0 {
-				t.Fatal("Antigravity transport must not allow an implicit HTTP/2 upgrade")
+			if transport.TLSNextProto != nil && transport.TLSNextProto["h2"] == nil {
+				t.Fatal("Antigravity transport must allow HTTP/2 negotiation")
 			}
 			if transport.TLSClientConfig == nil {
 				t.Fatal("Antigravity transport must carry an explicit TLS config")
 			}
-			if len(transport.TLSClientConfig.NextProtos) != 1 || transport.TLSClientConfig.NextProtos[0] != "http/1.1" {
-				t.Fatalf("Antigravity ALPN must be http/1.1, got %v", transport.TLSClientConfig.NextProtos)
+			if len(transport.TLSClientConfig.NextProtos) != 2 || transport.TLSClientConfig.NextProtos[0] != "h2" {
+				t.Fatalf("Antigravity ALPN must prefer h2, got %v", transport.TLSClientConfig.NextProtos)
 			}
 			// Go's DefaultMaxIdleConnsPerHost of 2 would force concurrent sessions on one
 			// credential to re-handshake. The native Antigravity stack raises it to 100.
@@ -141,17 +141,17 @@ func TestAntigravityPoolLimitsCapIdleTimeout(t *testing.T) {
 func TestNewAntigravityHTTPClientRejectsTypedNilContextTransport(t *testing.T) {
 	var typedNil *http.Transport
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(typedNil))
-	client := newAntigravityHTTPClient(ctx, &config.Config{}, antigravityAuthWithIDAndProxy("typed-nil", ""), 0)
+	client := antigravityBaseHTTPClient(ctx, &config.Config{}, antigravityAuthWithIDAndProxy("typed-nil", ""), 0)
 
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok || transport == nil {
 		t.Fatalf("expected a usable *http.Transport, got %#v", client.Transport)
 	}
-	if transport.ForceAttemptHTTP2 {
-		t.Fatal("fallback transport must not attempt HTTP/2")
+	if !transport.ForceAttemptHTTP2 {
+		t.Fatal("fallback transport must negotiate HTTP/2")
 	}
-	if len(transport.TLSClientConfig.NextProtos) != 1 || transport.TLSClientConfig.NextProtos[0] != "http/1.1" {
-		t.Fatalf("fallback transport ALPN must be http/1.1, got %v", transport.TLSClientConfig.NextProtos)
+	if len(transport.TLSClientConfig.NextProtos) != 2 || transport.TLSClientConfig.NextProtos[0] != "h2" {
+		t.Fatalf("fallback transport ALPN must prefer h2, got %v", transport.TLSClientConfig.NextProtos)
 	}
 }
 
@@ -162,7 +162,7 @@ func TestNewAntigravityHTTPClientKeepsForeignRoundTripper(t *testing.T) {
 		return nil, errors.New("unused")
 	})
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(foreign))
-	client := newAntigravityHTTPClient(ctx, &config.Config{}, antigravityAuthWithIDAndProxy("foreign-rt", ""), 0)
+	client := antigravityBaseHTTPClient(ctx, &config.Config{}, antigravityAuthWithIDAndProxy("foreign-rt", ""), 0)
 	if _, isTransport := client.Transport.(*http.Transport); isTransport {
 		t.Fatal("a non-*http.Transport RoundTripper must be preserved as-is")
 	}
@@ -229,8 +229,8 @@ func TestAntigravityConcurrentRequestsReusePooledConnections(t *testing.T) {
 
 func TestNewAntigravityHTTPClientDistinctProxiesUseDistinctPools(t *testing.T) {
 	cfg := &config.Config{}
-	a := newAntigravityHTTPClient(context.Background(), cfg, antigravityAuthWithProxy("http://127.0.0.1:18090"), 0)
-	b := newAntigravityHTTPClient(context.Background(), cfg, antigravityAuthWithProxy("http://127.0.0.1:18091"), 0)
+	a := antigravityBaseHTTPClient(context.Background(), cfg, antigravityAuthWithProxy("http://127.0.0.1:18090"), 0)
+	b := antigravityBaseHTTPClient(context.Background(), cfg, antigravityAuthWithProxy("http://127.0.0.1:18091"), 0)
 	if a.Transport == b.Transport {
 		t.Fatal("expected distinct proxies to use distinct connection pools")
 	}
@@ -240,9 +240,9 @@ func TestNewAntigravityHTTPClientScopesPoolsByAuthIdentity(t *testing.T) {
 	cfg := &config.Config{}
 	const proxyURL = "http://127.0.0.1:18092"
 
-	a1 := newAntigravityHTTPClient(context.Background(), cfg, antigravityAuthWithIDAndProxy("auth-a", proxyURL), 0)
-	a2 := newAntigravityHTTPClient(context.Background(), cfg, antigravityAuthWithIDAndProxy("auth-a", proxyURL), 0)
-	b := newAntigravityHTTPClient(context.Background(), cfg, antigravityAuthWithIDAndProxy("auth-b", proxyURL), 0)
+	a1 := antigravityBaseHTTPClient(context.Background(), cfg, antigravityAuthWithIDAndProxy("auth-a", proxyURL), 0)
+	a2 := antigravityBaseHTTPClient(context.Background(), cfg, antigravityAuthWithIDAndProxy("auth-a", proxyURL), 0)
+	b := antigravityBaseHTTPClient(context.Background(), cfg, antigravityAuthWithIDAndProxy("auth-b", proxyURL), 0)
 	if a1.Transport != a2.Transport {
 		t.Fatal("the same auth identity must share its connection pool across sessions")
 	}
@@ -250,8 +250,8 @@ func TestNewAntigravityHTTPClientScopesPoolsByAuthIdentity(t *testing.T) {
 		t.Fatal("different auth identities must not share a proxied connection pool")
 	}
 
-	directA := newAntigravityHTTPClient(context.Background(), cfg, antigravityAuthWithIDAndProxy("direct-a", ""), 0)
-	directB := newAntigravityHTTPClient(context.Background(), cfg, antigravityAuthWithIDAndProxy("direct-b", ""), 0)
+	directA := antigravityBaseHTTPClient(context.Background(), cfg, antigravityAuthWithIDAndProxy("direct-a", ""), 0)
+	directB := antigravityBaseHTTPClient(context.Background(), cfg, antigravityAuthWithIDAndProxy("direct-b", ""), 0)
 	if directA.Transport == directB.Transport {
 		t.Fatal("different auth identities must not share a direct connection pool")
 	}
@@ -299,9 +299,9 @@ func TestAntigravityHTTP11TransportReusesPoolWithoutAuthID(t *testing.T) {
 }
 
 func TestAntigravityTransportScopeFallsBackToStableMarkers(t *testing.T) {
-	digest := func(prefix, secret string) string {
+	digest := func(secret string) string {
 		sum := sha256.Sum256([]byte(secret))
-		return prefix + hex.EncodeToString(sum[:8])
+		return hex.EncodeToString(sum[:])
 	}
 	cases := []struct {
 		name string
@@ -337,12 +337,22 @@ func TestAntigravityTransportScopeFallsBackToStableMarkers(t *testing.T) {
 		{
 			"refresh token preferred over access token",
 			&cliproxyauth.Auth{Metadata: map[string]any{"refresh_token": "r-1", "access_token": "a-1"}},
-			digest("refresh:", "r-1"),
+			digest("r-1"),
+		},
+		{
+			"refresh token preferred over file identity and email",
+			&cliproxyauth.Auth{ID: "auth-1", Metadata: map[string]any{"refresh_token": "r-1", "email": "account@example.com"}},
+			digest("r-1"),
+		},
+		{
+			"email preferred over access token",
+			&cliproxyauth.Auth{Metadata: map[string]any{"email": "account@example.com", "access_token": "a-1"}},
+			digest("account@example.com"),
 		},
 		{
 			"access token fallback",
 			&cliproxyauth.Auth{Metadata: map[string]any{"access_token": "secret-token"}},
-			digest("token:", "secret-token"),
+			digest("secret-token"),
 		},
 	}
 	for _, tc := range cases {
@@ -388,7 +398,7 @@ func TestAntigravityTransportScopeSurvivesAccessTokenRotation(t *testing.T) {
 }
 
 // TestAntigravityTransportScopeNeverLeaksToken ensures the credential-derived scope
-// only carries a short digest, so a pool key can never reveal the credential.
+// only carries a digest, so a pool key can never reveal the credential.
 func TestAntigravityTransportScopeNeverLeaksToken(t *testing.T) {
 	const (
 		accessToken  = "ya29.super-secret-access-token"
@@ -398,18 +408,17 @@ func TestAntigravityTransportScopeNeverLeaksToken(t *testing.T) {
 		name   string
 		auth   *cliproxyauth.Auth
 		secret string
-		prefix string
 	}{
-		{"access token", &cliproxyauth.Auth{Metadata: map[string]any{"access_token": accessToken}}, accessToken, "token:"},
-		{"refresh token", &cliproxyauth.Auth{Metadata: map[string]any{"refresh_token": refreshToken}}, refreshToken, "refresh:"},
+		{"access token", &cliproxyauth.Auth{Metadata: map[string]any{"access_token": accessToken}}, accessToken},
+		{"refresh token", &cliproxyauth.Auth{Metadata: map[string]any{"refresh_token": refreshToken}}, refreshToken},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			scope := antigravityTransportScope(tc.auth)
 			if strings.Contains(scope, tc.secret) {
 				t.Fatalf("scope %q must not embed the credential", scope)
 			}
-			if !strings.HasPrefix(scope, tc.prefix) || len(scope) != len(tc.prefix)+16 {
-				t.Fatalf("scope = %q, want a short %s digest", scope, tc.prefix)
+			if _, err := hex.DecodeString(scope); err != nil || len(scope) != 64 {
+				t.Fatalf("scope = %q, want a full SHA-256 digest", scope)
 			}
 		})
 	}
@@ -428,7 +437,7 @@ func TestAntigravityTransportCacheEvictsStalePools(t *testing.T) {
 	cfg := &config.Config{}
 	for i := 0; i < 40; i++ {
 		auth := antigravityAuthWithIDAndProxy("rotating-auth", fmt.Sprintf("http://127.0.0.1:%d", 19000+i))
-		if client := newAntigravityHTTPClient(context.Background(), cfg, auth, 0); client.Transport == nil {
+		if client := antigravityBaseHTTPClient(context.Background(), cfg, auth, 0); client.Transport == nil {
 			t.Fatalf("request %d: expected a transport", i)
 		}
 	}
@@ -442,7 +451,7 @@ func TestAntigravityTransportCacheEvictsStalePools(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		fresh := http.DefaultTransport.(*http.Transport).Clone()
 		ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(fresh))
-		if client := newAntigravityHTTPClient(ctx, cfg, auth, 0); client.Transport == nil {
+		if client := antigravityBaseHTTPClient(ctx, cfg, auth, 0); client.Transport == nil {
 			t.Fatalf("ctx request %d: expected a transport", i)
 		}
 	}
@@ -503,8 +512,8 @@ func TestAntigravityTransportMatchesNativeTLSProfile(t *testing.T) {
 		t.Fatalf("close response body: %v", errClose)
 	}
 
-	if len(clientHelloProtos) != 1 || clientHelloProtos[0] != "http/1.1" {
-		t.Fatalf("ClientHello ALPN = %v, want http/1.1", clientHelloProtos)
+	if len(clientHelloProtos) != 2 || clientHelloProtos[0] != "h2" {
+		t.Fatalf("ClientHello ALPN = %v, want h2, http/1.1", clientHelloProtos)
 	}
 	if requestProto != "HTTP/1.1" {
 		t.Fatalf("request protocol = %q, want HTTP/1.1", requestProto)
@@ -535,7 +544,7 @@ func TestAntigravityProxiedRequestsReuseOneConnection(t *testing.T) {
 	auth := antigravityAuthWithProxy(srv.URL)
 	const requests = 8
 	for i := 0; i < requests; i++ {
-		client := newAntigravityHTTPClient(context.Background(), cfg, auth, 0)
+		client := antigravityBaseHTTPClient(context.Background(), cfg, auth, 0)
 		req, errReq := http.NewRequest(http.MethodGet, "http://antigravity.invalid/v1internal:streamGenerateContent", nil)
 		if errReq != nil {
 			t.Fatalf("NewRequest() error = %v", errReq)

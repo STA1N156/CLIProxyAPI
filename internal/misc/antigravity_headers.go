@@ -12,7 +12,7 @@ func IsAntigravityTraceHeader(name string) bool {
 		return true
 	}
 	switch name {
-	case "traceparent", "tracestate", "x-cloud-trace-context", "x-goog-request-params", "x-goog-user-project", "x-request-id":
+	case "traceparent", "tracestate", "x-cloud-trace-context", "x-goog-request-params", "x-request-id":
 		return true
 	}
 	return false
@@ -23,15 +23,13 @@ func IsAntigravityTraceHeader(name string) bool {
 func SanitizeAntigravityHeaders(req *http.Request) {
 	for name := range req.Header {
 		switch strings.ToLower(name) {
-		case "authorization", "content-type", "user-agent", "accept":
+		case "authorization", "content-type", "user-agent":
 			continue
 		}
 		if !IsAntigravityTraceHeader(name) {
 			delete(req.Header, name)
 		}
 	}
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Connection", "keep-alive")
 	req.Close = false
 }
 

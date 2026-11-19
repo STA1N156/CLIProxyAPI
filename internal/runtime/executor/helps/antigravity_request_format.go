@@ -55,38 +55,13 @@ func NormalizeAntigravitySystemInstruction(payload []byte) []byte {
 	return payload
 }
 
-// AntigravityRequestType classifies generation requests from their tools and history.
+// AntigravityRequestType follows the handoff client's tool-presence rule.
 func AntigravityRequestType(payload []byte, model string) (string, bool) {
 	if strings.Contains(strings.ToLower(model), "image") {
 		return "image_gen", false
 	}
-	hasTools := false
-	util.GetGJSONBytesNoCopy(payload, "request.tools").ForEach(func(_, tool gjson.Result) bool {
-		if tool.IsObject() {
-			tool.ForEach(func(key, value gjson.Result) bool {
-				switch key.String() {
-				case "functionDeclarations", "function_declarations":
-					hasTools = value.Get("#").Int() > 0
-				}
-				return !hasTools
-			})
-		}
-		return !hasTools
-	})
-	if hasTools {
+	if util.GetGJSONBytesNoCopy(payload, "request.tools.#").Int() > 0 {
 		return "agent", true
-	}
-	hasHistory := false
-	util.GetGJSONBytesNoCopy(payload, "request.contents").ForEach(func(_, content gjson.Result) bool {
-		content.Get("parts").ForEach(func(_, part gjson.Result) bool {
-			hasHistory = part.Get("functionCall").Exists() || part.Get("function_call").Exists() ||
-				part.Get("functionResponse").Exists() || part.Get("function_response").Exists()
-			return !hasHistory
-		})
-		return !hasHistory
-	})
-	if hasHistory {
-		return "agent", false
 	}
 	return "chat", false
 }

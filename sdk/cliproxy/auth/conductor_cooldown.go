@@ -812,6 +812,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								next := now.Add(30 * time.Minute)
 								state.NextRetryAfter = next
 								suspendReason = "payment_required"
+								if antigravityAccessDenied(auth, result.Error) {
+									state.NextRetryAfter = now.Add(time.Minute)
+								}
 								shouldSuspendModel = true
 							}
 						case 404:
@@ -1927,6 +1930,9 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.NextRetryAfter = time.Time{}
 		} else {
 			auth.NextRetryAfter = now.Add(30 * time.Minute)
+			if antigravityAccessDenied(auth, resultErr) {
+				auth.NextRetryAfter = now.Add(time.Minute)
+			}
 		}
 	case 404:
 		auth.StatusMessage = "not_found"
@@ -1967,6 +1973,28 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.NextRetryAfter = now.Add(transientErrorCooldown)
 		auth.Unavailable = true
 	}
+}
+
+func antigravityAccessDenied(auth *Auth, resultErr *Error) bool {
+	if auth == nil || !strings.EqualFold(auth.Provider, "antigravity") || resultErr == nil || resultErr.HTTPStatus != http.StatusForbidden {
+		return false
+	}
+	var body struct {
+		Error struct {
+			Details []struct {
+				Reason string `json:"reason"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(resultErr.Message), &body) != nil {
+		return false
+	}
+	for _, detail := range body.Error.Details {
+		if detail.Reason == "USER_PROJECT_DENIED" || detail.Reason == "SUBSCRIPTION_REQUIRED" {
+			return true
+		}
+	}
+	return false
 }
 
 // quotaCooldownAfterFailure returns the recovery deadline and backoff level for

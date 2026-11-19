@@ -182,7 +182,7 @@ func TestAntigravityBuildRequest_UsesRouteModelWhenPayloadContainsDifferentModel
 	}
 }
 
-func TestAntigravityBuildRequestUsesDerivedSessionIDAndPreservesExplicit(t *testing.T) {
+func TestAntigravityBuildRequest_UsesAccountSessionIDAndPreservesExplicit(t *testing.T) {
 	t.Parallel()
 
 	executor := &AntigravityExecutor{}
@@ -198,7 +198,7 @@ func TestAntigravityBuildRequestUsesDerivedSessionIDAndPreservesExplicit(t *test
 		t.Fatalf("request missing or invalid: %v", body["request"])
 	}
 	if got := request["sessionId"]; got == "" || got == "-123456789" {
-		t.Fatalf("request.sessionId should be derived from the body, got %v", got)
+		t.Fatalf("request.sessionId should be derived from the account, got %v", got)
 	}
 
 	explicitPayload := []byte(`{"request":{"sessionId":"-987654321","contents":[{"role":"user","parts":[{"text":"hello"}]}]}}`)
@@ -216,7 +216,7 @@ func TestAntigravityBuildRequestUsesDerivedSessionIDAndPreservesExplicit(t *test
 	}
 }
 
-func TestAntigravityBuildRequest_DropsOrphanSearchTools(t *testing.T) {
+func TestAntigravityBuildRequest_KeepsSearchToolsAsAgent(t *testing.T) {
 	body := buildRequestBodyFromRawPayload(t, "gemini-3.1-flash-lite", []byte(`{
 		"requestType": "web_search",
 		"request": {
@@ -243,8 +243,8 @@ func TestAntigravityBuildRequest_DropsOrphanSearchTools(t *testing.T) {
 		}
 	}`))
 
-	if got, ok := body["requestType"].(string); !ok || got != "chat" {
-		t.Fatalf("requestType should be chat, got=%v", body["requestType"])
+	if got, ok := body["requestType"].(string); !ok || got != "agent" {
+		t.Fatalf("requestType should be agent, got=%v", body["requestType"])
 	}
 	if _, ok := body["requestId"]; !ok {
 		t.Fatalf("request should have requestId: %v", body["requestId"])
@@ -255,6 +255,9 @@ func TestAntigravityBuildRequest_DropsOrphanSearchTools(t *testing.T) {
 	}
 	if _, ok := request["sessionId"]; !ok {
 		t.Fatalf("request should have request.sessionId: %v", request["sessionId"])
+	}
+	if tools, ok := request["tools"].([]any); !ok || len(tools) != 1 {
+		t.Fatalf("search tool should be retained: %v", request["tools"])
 	}
 	if got, ok := body["project"].(string); !ok || got != "project-1" {
 		t.Fatalf("project should come from auth metadata, got=%v", body["project"])
@@ -277,7 +280,7 @@ func TestAntigravityBuildRequest_KeepsConnectionAlive(t *testing.T) {
 	}
 }
 
-func TestCloneTransportWithHTTP11_DisablesHTTP2AndSetsPoolLimits(t *testing.T) {
+func TestCloneTransportWithHTTP11_EnablesHTTP2AndSetsPoolLimits(t *testing.T) {
 	base := &http.Transport{
 		MaxIdleConns:        10,
 		MaxIdleConnsPerHost: 2,
@@ -287,8 +290,8 @@ func TestCloneTransportWithHTTP11_DisablesHTTP2AndSetsPoolLimits(t *testing.T) {
 	if transport == base {
 		t.Fatal("transport should be cloned")
 	}
-	if transport.ForceAttemptHTTP2 {
-		t.Fatal("Antigravity transport must not attempt HTTP/2")
+	if !transport.ForceAttemptHTTP2 {
+		t.Fatal("Antigravity transport must negotiate HTTP/2")
 	}
 	if transport.MaxIdleConns < antigravityMaxIdleConnsPerHost {
 		t.Fatalf("MaxIdleConns = %d, want at least %d", transport.MaxIdleConns, antigravityMaxIdleConnsPerHost)

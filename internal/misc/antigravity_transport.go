@@ -23,14 +23,13 @@ func CloneAntigravityTransport(base *http.Transport) *http.Transport {
 		base = &http.Transport{}
 	}
 	transport := base.Clone()
-	transport.ForceAttemptHTTP2 = false
-	transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
+	transport.ForceAttemptHTTP2 = true
 	if transport.TLSClientConfig == nil {
 		transport.TLSClientConfig = &tls.Config{}
 	} else {
 		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
 	}
-	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	transport.TLSClientConfig.NextProtos = []string{"h2", "http/1.1"}
 	// Keep explicitly supplied TLS dialers, including already configured clones.
 	if base.DialTLSContext != nil {
 		return transport
@@ -81,54 +80,87 @@ func CloneAntigravityTransport(base *http.Transport) *http.Transport {
 		if baseConfig.ServerName != "" {
 			host = baseConfig.ServerName
 		}
-		config := &utls.Config{ServerName: host, RootCAs: baseConfig.RootCAs, InsecureSkipVerify: baseConfig.InsecureSkipVerify, VerifyPeerCertificate: baseConfig.VerifyPeerCertificate}
+		config := &utls.Config{ServerName: host, NextProtos: baseConfig.NextProtos, RootCAs: baseConfig.RootCAs, InsecureSkipVerify: baseConfig.InsecureSkipVerify, VerifyPeerCertificate: baseConfig.VerifyPeerCertificate}
 		if verify := baseConfig.VerifyConnection; verify != nil {
 			config.VerifyConnection = func(state utls.ConnectionState) error {
 				return verify(tls.ConnectionState{Version: state.Version, HandshakeComplete: state.HandshakeComplete, DidResume: state.DidResume, CipherSuite: state.CipherSuite, NegotiatedProtocol: state.NegotiatedProtocol, ServerName: state.ServerName, PeerCertificates: state.PeerCertificates, VerifiedChains: state.VerifiedChains})
 			}
 		}
 		secured := utls.UClient(conn, config, utls.HelloCustom)
-		if err = secured.ApplyPreset(antigravityOpenSSLHello()); err == nil {
+		if err = secured.ApplyPreset(antigravityGoDefaultHello()); err == nil {
 			err = secured.HandshakeContext(ctx)
 		}
 		if err != nil {
 			_ = conn.Close()
 			return nil, fmt.Errorf("antigravity TLS: %w", err)
 		}
+		if secured.ConnectionState().NegotiatedProtocol == "h2" {
+			return &officialTLSConn{UConn: secured}, nil
+		}
 		return httpwire.NewOrderedRequestConn(secured, antigravityHeaderOrder), nil
 	}
 	return transport
 }
 
-var antigravityHeaders = []string{"Host", "Connection", "User-Agent", "Authorization", "Content-Type", "Accept", "Accept-Encoding", "Content-Length"}
+type officialTLSConn struct {
+	*utls.UConn
+}
+
+func (c *officialTLSConn) ConnectionState() tls.ConnectionState {
+	state := c.UConn.ConnectionState()
+	return tls.ConnectionState{
+		Version:                     state.Version,
+		HandshakeComplete:           state.HandshakeComplete,
+		DidResume:                   state.DidResume,
+		CipherSuite:                 state.CipherSuite,
+		NegotiatedProtocol:          state.NegotiatedProtocol,
+		NegotiatedProtocolIsMutual:  state.NegotiatedProtocolIsMutual,
+		ServerName:                  state.ServerName,
+		PeerCertificates:            state.PeerCertificates,
+		VerifiedChains:              state.VerifiedChains,
+		SignedCertificateTimestamps: state.SignedCertificateTimestamps,
+		OCSPResponse:                state.OCSPResponse,
+		TLSUnique:                   state.TLSUnique,
+		ECHAccepted:                 state.ECHAccepted,
+	}
+}
+
+var antigravityHeaders = []string{"Host", "Accept", "Connection", "User-Agent", "Authorization", "Content-Type", "Accept-Encoding", "Content-Length"}
+var antigravityStreamHeaders = []string{"Host", "User-Agent", "Transfer-Encoding", "Authorization", "Content-Type", "Accept-Encoding"}
 var antigravityOAuthHeaders = []string{"Host", "Accept", "Accept-Encoding", "Connection", "User-Agent", "Content-Type", "Authorization", "Content-Length"}
 
 func antigravityHeaderOrder(_, target string) []string {
 	if strings.HasPrefix(target, "/token") || strings.HasPrefix(target, "/oauth2/v2/userinfo") {
 		return antigravityOAuthHeaders
 	}
+	if strings.Contains(target, ":streamGenerateContent") {
+		return antigravityStreamHeaders
+	}
 	return antigravityHeaders
 }
 
-// Match httpx 0.28's default OpenSSL 3 ClientHello used by agy2api.
-func antigravityOpenSSLHello() *utls.ClientHelloSpec {
+// TLS profile supplied by the handoff package for language_server 2.31.0.
+func antigravityGoDefaultHello() *utls.ClientHelloSpec {
+	signatures := []utls.SignatureScheme{
+		2308, 2309, 2310, 2052, 1027, 2055, 2053, 2054, 1025, 1281, 1537, 1283, 1539,
+	}
 	return &utls.ClientHelloSpec{
 		TLSVersMin: utls.VersionTLS12, TLSVersMax: utls.VersionTLS13,
-		CipherSuites:       []uint16{4866, 4867, 4865, 49196, 49200, 49195, 49199, 52393, 52392, 49188, 49192, 49187, 49191, 159, 158, 107, 103, 255},
+		CipherSuites:       []uint16{49195, 49199, 49196, 49200, 52393, 52392, 49161, 49171, 49162, 49172, 4865, 4866, 4867},
 		CompressionMethods: []byte{0},
 		Extensions: []utls.TLSExtension{
 			&utls.SNIExtension{},
-			&utls.SupportedPointsExtension{SupportedPoints: []byte{0, 1, 2}},
-			&utls.SupportedCurvesExtension{Curves: []utls.CurveID{29, 23, 30, 25, 24, 256, 257, 258, 259, 260}},
-			&utls.SessionTicketExtension{},
-			&utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}},
-			&utls.GenericExtension{Id: 22},
+			&utls.GenericExtension{Id: 11, Data: []byte{1, 0}},
+			&utls.RenegotiationInfoExtension{Renegotiation: utls.RenegotiateOnceAsClient},
 			&utls.ExtendedMasterSecretExtension{},
-			&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []utls.SignatureScheme{1027, 1283, 1539, 2055, 2056, 2057, 2058, 2059, 2052, 2053, 2054, 1025, 1281, 1537, 771, 769, 770, 1026, 1282, 1538}},
+			&utls.SCTExtension{},
+			&utls.GenericExtension{Id: 5, Data: []byte{1, 0, 0, 0, 0}},
+			&utls.SupportedCurvesExtension{Curves: []utls.CurveID{utls.X25519MLKEM768, 4587, 4589, 29, 23, 24, 25}},
+			&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: signatures},
+			&utls.SignatureAlgorithmsCertExtension{SupportedSignatureAlgorithms: append(signatures, 513, 515)},
+			&utls.ALPNExtension{AlpnProtocols: []string{"h2", "http/1.1"}},
 			&utls.SupportedVersionsExtension{Versions: []uint16{utls.VersionTLS13, utls.VersionTLS12}},
-			&utls.PSKKeyExchangeModesExtension{Modes: []uint8{1}},
-			&utls.KeyShareExtension{KeyShares: []utls.KeyShare{{Group: utls.X25519}}},
-			&utls.UtlsPaddingExtension{GetPaddingLen: utls.BoringPaddingStyle},
+			&utls.KeyShareExtension{KeyShares: []utls.KeyShare{{Group: utls.X25519MLKEM768}, {Group: utls.X25519}}},
 		},
 	}
 }
