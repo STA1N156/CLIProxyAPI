@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -214,23 +216,37 @@ func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cli
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	client.Transport = &helps.AntigravityClientTransport{Base: base, RefreshProject: func(refreshCtx context.Context, token string) (string, error) {
-		project, errProject := NewAntigravityExecutor(cfg).fetchAntigravityProjectID(refreshCtx, auth, token)
-		if errProject == nil && project != "" && auth != nil {
-			if manager := antigravityClientManager.Load(); manager != nil {
-				if updated, ok := manager.GetByID(auth.ID); ok {
-					if updated.Metadata == nil {
-						updated.Metadata = make(map[string]any)
-					}
-					updated.Metadata["project_id"] = project
-					if _, errUpdate := manager.Update(refreshCtx, updated); errUpdate != nil {
-						log.Debugf("antigravity: save refreshed project: %v", errUpdate)
-					}
-				}
+	stateDir := filepath.Join(os.TempDir(), "cliproxy-antigravity-wire")
+	if cfg != nil && cfg.AuthDir != "" {
+		stateDir = filepath.Join(cfg.AuthDir, ".antigravity-wire")
+	}
+	wireTransport := &helps.AntigravityWireTransport{Base: base, Account: antigravityTransportScope(auth) + "|" + antigravityProxyURL(cfg, auth), StateDir: stateDir, BaseURL: buildBaseURL(auth), Token: func() (string, error) {
+		current := auth
+		if manager := antigravityClientManager.Load(); manager != nil && auth != nil {
+			if latest, ok := manager.GetByID(auth.ID); ok {
+				current = latest
 			}
 		}
-		return project, errProject
+		token, updated, err := NewAntigravityExecutor(cfg).ensureAccessToken(context.Background(), current)
+		if err == nil && updated != nil {
+			if manager := antigravityClientManager.Load(); manager != nil {
+				_, err = manager.Update(context.Background(), updated)
+			}
+		}
+		return token, err
 	}}
+	if cfg != nil && cfg.RequestLog {
+		wireTransport.Record = func(req *http.Request, body []byte) {
+			var id, label, typ, value string
+			if auth != nil {
+				id = auth.ID
+				label = auth.Label
+				typ, value = auth.AccountInfo()
+			}
+			helps.RecordAPIRequest(req.Context(), cfg, helps.UpstreamRequestLog{URL: req.URL.String(), Method: req.Method, Headers: req.Header.Clone(), Body: body, Provider: "antigravity", AuthID: id, AuthLabel: label, AuthType: typ, AuthValue: value})
+		}
+	}
+	client.Transport = wireTransport
 	return client
 }
 
@@ -239,6 +255,7 @@ func antigravityBaseHTTPClient(ctx context.Context, cfg *config.Config, auth *cl
 		if transport := antigravityProxiedHTTP11Transport(auth, proxyURL); transport != nil {
 			return &http.Client{Transport: transport, Timeout: timeout}
 		}
+		return &http.Client{Transport: helps.FailedTransport{Err: fmt.Errorf("antigravity: invalid account proxy")}}
 	}
 
 	client := helps.NewProxyAwareHTTPClient(ctx, cfg, auth, timeout)

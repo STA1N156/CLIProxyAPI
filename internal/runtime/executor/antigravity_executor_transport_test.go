@@ -29,9 +29,10 @@ func antigravityAuthWithIDAndProxy(id, proxyURL string) *cliproxyauth.Auth {
 		ID:       id,
 		ProxyURL: proxyURL,
 		Metadata: map[string]any{
-			"access_token": "test-access-token",
-			"project_id":   "test-project",
-			"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
+			"access_token":  "test-access-token",
+			"refresh_token": "test-refresh-" + id,
+			"project_id":    "test-project",
+			"expired":       time.Now().Add(time.Hour).Format(time.RFC3339),
 		},
 	}
 }
@@ -68,16 +69,16 @@ func TestNewAntigravityHTTPClientSharesTransport(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected *http.Transport, got %T", first.Transport)
 			}
-			if !transport.ForceAttemptHTTP2 {
-				t.Fatal("Antigravity transport must negotiate HTTP/2")
+			if transport.ForceAttemptHTTP2 {
+				t.Fatal("Antigravity transport must use HTTP/1.1")
 			}
-			if transport.TLSNextProto != nil && transport.TLSNextProto["h2"] == nil {
-				t.Fatal("Antigravity transport must allow HTTP/2 negotiation")
+			if transport.TLSNextProto["h2"] != nil {
+				t.Fatal("Antigravity transport must not negotiate HTTP/2")
 			}
 			if transport.TLSClientConfig == nil {
 				t.Fatal("Antigravity transport must carry an explicit TLS config")
 			}
-			if len(transport.TLSClientConfig.NextProtos) != 2 || transport.TLSClientConfig.NextProtos[0] != "h2" {
+			if len(transport.TLSClientConfig.NextProtos) != 1 || transport.TLSClientConfig.NextProtos[0] != "http/1.1" {
 				t.Fatalf("Antigravity ALPN must prefer h2, got %v", transport.TLSClientConfig.NextProtos)
 			}
 			// Go's DefaultMaxIdleConnsPerHost of 2 would force concurrent sessions on one
@@ -147,10 +148,10 @@ func TestNewAntigravityHTTPClientRejectsTypedNilContextTransport(t *testing.T) {
 	if !ok || transport == nil {
 		t.Fatalf("expected a usable *http.Transport, got %#v", client.Transport)
 	}
-	if !transport.ForceAttemptHTTP2 {
-		t.Fatal("fallback transport must negotiate HTTP/2")
+	if transport.ForceAttemptHTTP2 {
+		t.Fatal("fallback transport must use HTTP/1.1")
 	}
-	if len(transport.TLSClientConfig.NextProtos) != 2 || transport.TLSClientConfig.NextProtos[0] != "h2" {
+	if len(transport.TLSClientConfig.NextProtos) != 1 || transport.TLSClientConfig.NextProtos[0] != "http/1.1" {
 		t.Fatalf("fallback transport ALPN must prefer h2, got %v", transport.TLSClientConfig.NextProtos)
 	}
 }

@@ -34,8 +34,8 @@ func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Au
 }
 
 func (e *AntigravityExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
-	if antigravityProjectIDFromAuth(auth) == "" {
-		return true
+	if auth == nil {
+		return false
 	}
 	accessToken := metaStringValue(auth.Metadata, "access_token")
 	return accessToken == "" || !tokenExpiry(auth.Metadata).After(time.Now().Add(refreshSkew))
@@ -47,28 +47,13 @@ func (e *AntigravityExecutor) PrepareRequestAuth(ctx context.Context, auth *clip
 	}
 
 	updated := auth.Clone()
-	token, refreshedAuth, errToken := e.ensureAccessToken(ctx, updated)
+	_, refreshedAuth, errToken := e.ensureAccessToken(ctx, updated)
 	if errToken != nil {
 		return nil, errToken
 	}
 	if refreshedAuth != nil {
 		updated = refreshedAuth
 	}
-	if antigravityProjectIDFromAuth(updated) != "" {
-		return updated, nil
-	}
-
-	projectID, errProject := e.fetchAntigravityProjectID(ctx, updated, token)
-	if errProject != nil {
-		return nil, missingAntigravityProjectIDError(errProject)
-	}
-	if projectID == "" {
-		return nil, missingAntigravityProjectIDError(nil)
-	}
-	if updated.Metadata == nil {
-		updated.Metadata = make(map[string]any)
-	}
-	updated.Metadata["project_id"] = projectID
 	return updated, nil
 }
 

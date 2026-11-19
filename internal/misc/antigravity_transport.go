@@ -23,13 +23,14 @@ func CloneAntigravityTransport(base *http.Transport) *http.Transport {
 		base = &http.Transport{}
 	}
 	transport := base.Clone()
-	transport.ForceAttemptHTTP2 = true
+	transport.ForceAttemptHTTP2 = false
+	transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
 	if transport.TLSClientConfig == nil {
 		transport.TLSClientConfig = &tls.Config{}
 	} else {
 		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
 	}
-	transport.TLSClientConfig.NextProtos = []string{"h2", "http/1.1"}
+	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	// Keep explicitly supplied TLS dialers, including already configured clones.
 	if base.DialTLSContext != nil {
 		return transport
@@ -125,7 +126,7 @@ func (c *officialTLSConn) ConnectionState() tls.ConnectionState {
 	}
 }
 
-var antigravityHeaders = []string{"Host", "Accept", "Connection", "User-Agent", "Authorization", "Content-Type", "Accept-Encoding", "Content-Length"}
+var antigravityHeaders = []string{"Host", "User-Agent", "Content-Length", "Authorization", "Content-Type", "Accept-Encoding"}
 var antigravityStreamHeaders = []string{"Host", "User-Agent", "Transfer-Encoding", "Authorization", "Content-Type", "Accept-Encoding"}
 var antigravityOAuthHeaders = []string{"Host", "Accept", "Accept-Encoding", "Connection", "User-Agent", "Content-Type", "Authorization", "Content-Length"}
 
@@ -139,7 +140,7 @@ func antigravityHeaderOrder(_, target string) []string {
 	return antigravityHeaders
 }
 
-// TLS profile supplied by the handoff package for language_server 2.31.0.
+// CLI TLS profile, with HTTP/2 removed from ALPN as in the wire2 transport.
 func antigravityGoDefaultHello() *utls.ClientHelloSpec {
 	signatures := []utls.SignatureScheme{
 		2308, 2309, 2310, 2052, 1027, 2055, 2053, 2054, 1025, 1281, 1537, 1283, 1539,
@@ -158,7 +159,7 @@ func antigravityGoDefaultHello() *utls.ClientHelloSpec {
 			&utls.SupportedCurvesExtension{Curves: []utls.CurveID{utls.X25519MLKEM768, 4587, 4589, 29, 23, 24, 25}},
 			&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: signatures},
 			&utls.SignatureAlgorithmsCertExtension{SupportedSignatureAlgorithms: append(signatures, 513, 515)},
-			&utls.ALPNExtension{AlpnProtocols: []string{"h2", "http/1.1"}},
+			&utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}},
 			&utls.SupportedVersionsExtension{Versions: []uint16{utls.VersionTLS13, utls.VersionTLS12}},
 			&utls.KeyShareExtension{KeyShares: []utls.KeyShare{{Group: utls.X25519MLKEM768}, {Group: utls.X25519}}},
 		},

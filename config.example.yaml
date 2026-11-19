@@ -283,10 +283,8 @@ codex:
     #     credential: "secret"
 
 # Antigravity provider behavior.
-# Handoff-compatible background traffic is controlled with environment variables:
-# ANTIGRAVITY_PRESENCE_INTERVAL=60 (seconds; 0 disables idle traffic)
-# ANTIGRAVITY_PRESENCE_CONCURRENCY=8 (account visits in parallel)
-# ANTIGRAVITY_USER_REQUEST_ENVELOPE=1 (0 disables agent user-text wrapping)
+# The embedded wire2 engine manages CLI control requests and conversation state.
+# Conversation files are stored below auth-dir/.antigravity-wire/.
 # antigravity:
 #   sensitive-words:             # optional: case-sensitive literal words to remove from Antigravity text
 #     - "API"

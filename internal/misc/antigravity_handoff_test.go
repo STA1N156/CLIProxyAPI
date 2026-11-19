@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-func TestAntigravityHandoffNegotiatesHTTP2(t *testing.T) {
+func TestAntigravityWireUsesHTTP1(t *testing.T) {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ProtoMajor != 2 {
+		if r.ProtoMajor != 1 {
 			t.Errorf("protocol = %s", r.Proto)
 		}
 		if r.Header.Get("Connection") != "" || r.Header.Get("Accept") != "" {
@@ -40,7 +40,7 @@ func TestAntigravityHandoffNegotiatesHTTP2(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	if resp.ProtoMajor != 2 {
+	if resp.ProtoMajor != 1 {
 		t.Fatalf("response protocol = %s", resp.Proto)
 	}
 }
